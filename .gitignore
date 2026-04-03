@@ -1,2 +1,4 @@
 run.bat
 Versus !.lnk
+__pycache__/
+*.pyc
