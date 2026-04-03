@@ -1,5 +1,5 @@
 """
-VERSUS — Interface Streamlit
+versus CLAUDE — Interface Streamlit
 Cahier des charges final : phrases par défaut, affinage n-grams ciblé,
 ANN (FAISS), agrégation bidirectionnelle.
 Visualisation : correspondances / suppressions / insertions.
@@ -26,7 +26,7 @@ from io import StringIO
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".vs_state.json")
 
 st.set_page_config(
-    page_title="VERSUS",
+    page_title="versus CLAUDE",
     page_icon="logo.gif",
     layout="wide"
 )
@@ -1250,7 +1250,7 @@ def main():
         " style="display:flex;align-items:center;justify-content:center;gap:10px;padding:0.5rem 0;cursor:pointer;border-radius:8px;transition:background 0.2s;user-select:none"
            onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='transparent'">
             {logo_img}
-            <span style="font-size:1.8rem;font-weight:800;letter-spacing:0.05em;color:#111827;font-family:system-ui,sans-serif">VERSUS</span>
+            <span style="font-size:1.8rem;font-weight:800;letter-spacing:0.05em;color:#111827;font-family:system-ui,sans-serif">versus CLAUDE</span>
         </div>
         <script>
             // Cacher le bouton reset par son texte (fiable quelle que soit la version Streamlit)
@@ -1876,7 +1876,7 @@ def main():
         """, unsafe_allow_html=True)
 
         st.markdown("## 📖 Guide d'utilisation")
-        st.caption("VERSUS — Outil de comparaison textuelle par similarité sémantique et lexicale")
+        st.caption("versus CLAUDE — Outil de comparaison textuelle par similarité sémantique et lexicale")
 
         # ── Diagramme pipeline ──
         pipeline_html = """<!DOCTYPE html><html><head><meta charset="UTF-8">
@@ -1900,7 +1900,7 @@ def main():
   <rect width="900" height="760" fill="#f8fafc" rx="12"/>
 
   <!-- Title -->
-  <text x="20" y="30" text-anchor="start" font-size="14" font-weight="700" fill="#374151">Pipeline VERSUS — flux de traitement</text>
+  <text x="20" y="30" text-anchor="start" font-size="14" font-weight="700" fill="#374151">Pipeline versus CLAUDE — flux de traitement</text>
 
   <!-- ══════ COLONNE GAUCHE : PIPELINE ══════ -->
 
@@ -2086,7 +2086,7 @@ def main():
         st.markdown("""
         <div class="guide-section">
             <p>Tous les paramètres sont accessibles dans la barre latérale. Les vignettes colorées
-            sous le logo VERSUS affichent leur état en temps réel. Un avertissement apparaît sous
+            sous le logo versus CLAUDE affichent leur état en temps réel. Un avertissement apparaît sous
             chaque paramètre modifié si un alignement existe déjà.</p>
             <p>
                 <b>Exclure les stopwords</b> — Agit en amont sur les embeddings (classement et alignement).
