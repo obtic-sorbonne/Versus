@@ -1,0 +1,18 @@
+{
+  "align_th": 0.61,
+  "align_n": 3,
+  "exclude_stopwords": false,
+  "scoring_method": "bm25",
+  "active_tab": 0,
+  "align_sort_mode": "Combinée (60/40)",
+  "source": {
+    "name": "1f.txt",
+    "content": "L’économie chinoise progresse de 4,9% au troisième trimestre malgré un ralentissement/essoufflement de sa croissance\n\nLa croissance économique de la Chine a enregistré son rythme de progression le plus lent en un an au troisième trimestre, alors que le ralentissement du secteur immobilier et les pénuries d'énergie ont mis en évidence la pression croissante sur les responsables politiques. Le produit intérieur brut a augmenté de 4,9 % en glissement annuel entre juillet et septembre, selon les données publiées lundi par le bureau chinois des statistiques, contre 7,9 % lors du deuxième trimestre. En glissement trimestriel, la croissance ne s’est élevée qu’à 0,2%. \n\nCes chiffres ajoutent à la pression qui s'exerce sur le président Xi Jinping, qui entame la dernière année de son second mandat et poursuit une ambitieuse stratégie de « prospérité commune », afin de lutter contre les « revenus excessivement élevés » et à encourager la redistribution des richesses. Parmi les priorités du dirigeant chinois figure la répression de l'effet de levier dans le secteur immobilier en difficulté/fragilisé, qui pourrait marquer une rupture avec le modèle économique du pays, fondé sur l'endettement. \n\n(…)\n\nL'économie chinoise a largement dépassé celle des autres pays développés en 2020, stimulée par l’essor du secteur du bâtiment, une hausse de l'activité industrielle et l'envolée des exportations, après une réduction notable des nouveaux cas de Covid au milieu de l'année. Les dernières données/Les données récentes reflètent cependant une perte d'élan, la production industrielle ayant augmenté de 3,1 % en septembre et de seulement 0,1 % en glissement mensuel. Les ventes au détail, un indicateur des dépenses de consommation qui a pris du retard par rapport à la reprise générale, en partie à cause des restrictions de voyage strictes afin de lutter contre le coronavirus, ont dépassé les attentes et augmenté de 4,4 %."
+  },
+  "corpus": [
+    {
+      "name": "1g.txt",
+      "content": "China’s economy grows 4.9% in third quarter as momentum slows\n\nChina’s economic growth slumped to its slowest pace in a year in the third quarter, as a property slowdown and energy shortages highlighted rising pressure on policymakers. Gross domestic product grew 4.9 per cent year-on-year between July and September, according to data released by the National Bureau of Statistics on Monday, compared with 7.9 per cent in the three months ending in June. On a quarter-on-quarter basis, growth was just 0.2 per cent. \n\nThe figures add to the pressure building on President Xi Jinping as he enters the final year of his second term and pursues an ambitious “common prosperity” strategy, an effort to tackle “excessively high incomes” and encourage wealth redistribution. The Chinese leader’s priorities include a crackdown on leverage in the struggling property sector that could mark a shift away from the country’s debt-fuelled economic model. \n\n(…)\n\nChina’s economy far outperformed other developed countries in 2020, driven by a construction boom, higher industrial activity and soaring exports, after new Covid cases slowed to a trickle by the middle of the year. But the latest data reflect a loss of momentum, with industrial production growing 3.1 per cent in September and edging just 0.1 per cent higher month-on-month. Retail sales, a gauge of consumer spending that has lagged behind the wider recovery in part because of strict anti-coronavirus travel restrictions, beat expectations to grow 4.4 per cent."
+    }
+  ]
+}
