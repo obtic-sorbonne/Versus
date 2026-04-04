@@ -1,9 +1,6 @@
 """
-versus CLAUDE — Interface Streamlit
-Cahier des charges final : phrases par défaut, affinage n-grams ciblé,
-ANN (FAISS), agrégation bidirectionnelle.
-Visualisation : correspondances / suppressions / insertions.
-Statistiques textuelles.
+VERSUS — Interface Streamlit
+Alignement sémantique de textes.
 """
 
 import streamlit as st
@@ -26,7 +23,7 @@ from io import StringIO
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".vs_state.json")
 
 st.set_page_config(
-    page_title="versus CLAUDE",
+    page_title="VERSUS",
     page_icon="logo.gif",
     layout="wide"
 )
@@ -128,9 +125,7 @@ def save_state():
     try:
         data = {
             "align_th":         st.session_state.get("align_th", 0.85),
-            "align_n":          st.session_state.get("align_n", 3),
             "exclude_stopwords":st.session_state.get("exclude_stopwords", False),
-            "scoring_method":   st.session_state.app_config.scoring_method if "app_config" in st.session_state else "bm25",
             "active_tab":       st.session_state.get("active_tab", 0),
             "align_sort_mode":  st.session_state.get("align_sort_mode", "Combinée (60/40)"),
             "source": (
@@ -164,8 +159,6 @@ def init_state():
     if 'app_config' not in st.session_state:
         saved = load_saved_state()
         cfg = ComparisonConfig()
-        if saved.get("scoring_method"):
-            cfg.scoring_method = saved["scoring_method"]
         st.session_state.app_config = cfg
         st.session_state.app_corpus      = Corpus(config=cfg)
         st.session_state.app_corpus_full = Corpus(config=cfg)
@@ -175,7 +168,6 @@ def init_state():
         st.session_state.app_alignments  = []
         st.session_state.app_comparateur = None
         st.session_state.active_tab      = saved.get("active_tab", 0)
-        st.session_state.align_n         = saved.get("align_n", 3)
         st.session_state.align_th        = saved.get("align_th", 0.85)
         st.session_state.app_config.similarity_threshold = st.session_state.align_th
         st.session_state.need_realign    = True
@@ -228,7 +220,6 @@ def reset_all():
     st.session_state.app_alignments = []
     st.session_state.app_comparateur = None
     st.session_state.active_tab = 0
-    st.session_state.align_n = 3
     st.session_state.align_th = 0.85
     st.session_state.need_realign = True
     st.session_state.params_pending = False
@@ -280,16 +271,8 @@ def estimate_computation(n_words1, n_words2, config):
     else:
         search_time = n_sent1 * n_sent2 * 0.00001
         strategy_parts.append("Exact")
-    refine_time = 0
-    if config.ngram_refinement:
-        n_candidate = int(n_sent1 * 0.3)
-        refine_time = n_candidate * 0.01 + 2
-        strategy_parts.append(f"N-grams (n={config.ngram_size})")
-    bidir_mult = 2.0 if config.bidirectional else 1.0
-    if config.bidirectional:
-        strategy_parts.append("Bidirectionnel")
-    total_time = max(1, int((sentence_time + search_time + refine_time) * bidir_mult))
-    total_mem = sentence_mem * bidir_mult
+    total_time = max(1, int(sentence_time + search_time))
+    total_mem = sentence_mem
     return total_time, round(total_mem, 1), " + ".join(strategy_parts)
 
 
@@ -314,16 +297,14 @@ def generate_ranking_csv():
 def generate_alignment_csv():
     output = StringIO()
     writer = csv.writer(output)
-    writer.writerow(['num', 'pos_source', 'pos_cible', 'texte_source', 'texte_cible', 'nb_suppressions', 'nb_insertions'])
+    writer.writerow(['num', 'pos_source', 'pos_cible', 'texte_source', 'texte_cible'])
     for i, match in enumerate(st.session_state.app_alignments):
         pos1, pos2 = match[0], match[1]
-        suppressions = match[2] if len(match) > 2 else []
-        insertions = match[3] if len(match) > 3 else []
         t1 = st.session_state.app_source.text.origin_content[pos1[0]:pos1[1]]
         t2 = st.session_state.app_target.text.origin_content[pos2[0]:pos2[1]]
         writer.writerow([
             i + 1, f"{pos1[0]}-{pos1[1]}", f"{pos2[0]}-{pos2[1]}",
-            t1[:200], t2[:200], len(suppressions), len(insertions)
+            t1[:200], t2[:200]
         ])
     return output.getvalue()
 
@@ -1250,7 +1231,7 @@ def main():
         " style="display:flex;align-items:center;justify-content:center;gap:10px;padding:0.5rem 0;cursor:pointer;border-radius:8px;transition:background 0.2s;user-select:none"
            onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='transparent'">
             {logo_img}
-            <span style="font-size:1.8rem;font-weight:800;letter-spacing:0.05em;color:#111827;font-family:system-ui,sans-serif">versus CLAUDE</span>
+            <span style="font-size:1.8rem;font-weight:800;letter-spacing:0.05em;color:#111827;font-family:system-ui,sans-serif">VERSUS</span>
         </div>
         <script>
             // Cacher le bouton reset par son texte (fiable quelle que soit la version Streamlit)
@@ -1277,33 +1258,12 @@ def main():
         th_c = ("#065f46","#d1fae5") if th_b >= 0.85 else ("#92400e","#fef3c7") if th_b >= 0.70 else ("#991b1b","#fee2e2")
         pills = ""
         pills += _pill("−SW" if sw_val else "+SW", "#065f46" if sw_val else "#6b7280", "#d1fae5" if sw_val else "#f3f4f6")
-        pills += _pill(cfg_b.scoring_method.upper(), "#1e40af", "#dbeafe")
         pills += _pill(f"seuil {th_b:.2f}", th_c[0], th_c[1])
         st.markdown(f"<div style='line-height:2'>{pills}</div>", unsafe_allow_html=True)
 
         cfg = st.session_state.app_config
 
         st.divider()
-
-        # --- Groupe 1 : Paramètres généraux ---
-        def _on_method_change():
-            new_val = st.session_state['sidebar_method']
-            if new_val != st.session_state.app_config.scoring_method:
-                st.session_state.app_config.scoring_method = new_val
-                st.session_state.app_config.profile_name = "custom"
-                st.session_state.app_corpus.corpus_weights = None
-                if st.session_state.app_rankings:
-                    st.session_state.ranking_pending = True
-
-        st.radio(
-            "Méthode de pondération", ["bm25", "tfidf"],
-            index=0 if cfg.scoring_method == "bm25" else 1,
-            horizontal=True, key="sidebar_method",
-            on_change=_on_method_change,
-            help="Utilisée pour calculer le poids des embeddings de chaque phrase.\n\n**BM25** : pondération probabiliste qui favorise les termes rares et pénalise les documents trop longs. Recommandé pour des corpus hétérogènes.\n\n**TF-IDF** : pondération classique basée sur la fréquence du terme dans le document et sa rareté dans le corpus. Plus simple, souvent suffisant pour des textes homogènes."
-        )
-        if st.session_state.ranking_pending:
-            st.warning("⚠️ Relancez le classement pour appliquer.")
 
         _show_w = bool(st.session_state.app_alignments)
         _w = "⚠️ Relancez l'alignement pour appliquer."
@@ -1332,18 +1292,13 @@ def main():
         )
         if abs(new_th - st.session_state.align_th) > 0.001:
             st.session_state.align_th = new_th
-            st.session_state.app_config.profile_name = "custom"
             st.session_state.params_pending = True
             st.session_state.pending_params.add("th")
             save_state()
         if "th" in st.session_state.pending_params and _show_w:
             st.warning(_w)
 
-        # Seuil adaptatif, affinage intermédiaire et agrégation bidirectionnelle
-        # sont hardcodés : adaptive=True, ngram_refinement=False, bidirectional=False
         st.session_state.app_config.adaptive_threshold = True
-        st.session_state.app_config.ngram_refinement   = False
-        st.session_state.app_config.bidirectional      = False
     
     # === NAVIGATION ===
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -1565,7 +1520,7 @@ def main():
                     top = st.session_state.app_rankings[0]['score']
                     st.markdown(f'<div class="stat-box"><div class="stat-value">{top*100:.1f}%</div><div class="stat-label">Score max</div></div>', unsafe_allow_html=True)
                 with c4:
-                    st.markdown(f'<div class="stat-box"><div class="stat-value">{st.session_state.app_config.scoring_method.upper()}</div><div class="stat-label">Pondération</div></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="stat-box"><div class="stat-value">{len(st.session_state.app_alignments)}</div><div class="stat-label">Alignements</div></div>', unsafe_allow_html=True)
                 
                 st.divider()
                 
@@ -1607,7 +1562,6 @@ def main():
         else:
             cfg = st.session_state.app_config
             
-            n = st.session_state.align_n
             th = st.session_state.align_th
             
             # Si params_pending, attendre que l'utilisateur relance manuellement
@@ -1629,7 +1583,6 @@ def main():
                 progress_bar.progress(20, text="Configuration...")
                 run_cfg = ComparisonConfig(**st.session_state.app_config.to_dict())
                 run_cfg.similarity_threshold = th
-                run_cfg.ngram_size = n
                 
                 progress_bar.progress(30, text="Segmentation en phrases...")
                 
@@ -1644,15 +1597,10 @@ def main():
                 
                 comp = PairText(text1, text2, config=run_cfg)
                 
-                progress_text = "Alignement par phrases"
-                if run_cfg.ngram_refinement:
-                    progress_text += f" + affinage n-grams (n={n})"
-                if run_cfg.bidirectional:
-                    progress_text += " + bidirectionnel"
-                progress_bar.progress(50, text=progress_text + "...")
+                progress_bar.progress(50, text="Alignement par phrases...")
                 
                 st.session_state.app_alignments = comp.compare_n_grams(
-                    n=n, model=model, score_threshold=th
+                    model=model, score_threshold=th
                 )
                 st.session_state.app_comparateur = comp
                 st.session_state.params_pending = False
@@ -1715,11 +1663,8 @@ def main():
                     end_idx = min(start_idx + BLOCKS_PER_PAGE, total_blocks)
                     page_matches_raw = all_matches[start_idx:end_idx]
                     
-                    # Calcul du diff uniquement pour les blocs de cette page
-                    page_matches = st.session_state.app_comparateur.compute_diffs(page_matches_raw)
-                    
                     html = make_html(
-                        page_matches,
+                        page_matches_raw,
                         st.session_state.app_comparateur,
                         stopwords,
                         start_offset=start_idx,
@@ -1876,7 +1821,7 @@ def main():
         """, unsafe_allow_html=True)
 
         st.markdown("## 📖 Guide d'utilisation")
-        st.caption("versus CLAUDE — Outil de comparaison textuelle par similarité sémantique et lexicale")
+        st.caption("VERSUS — Outil de comparaison textuelle par similarité sémantique et lexicale")
 
         # ── Diagramme pipeline ──
         pipeline_html = """<!DOCTYPE html><html><head><meta charset="UTF-8">
@@ -1900,7 +1845,7 @@ def main():
   <rect width="900" height="760" fill="#f8fafc" rx="12"/>
 
   <!-- Title -->
-  <text x="20" y="30" text-anchor="start" font-size="14" font-weight="700" fill="#374151">Pipeline versus CLAUDE — flux de traitement</text>
+  <text x="20" y="30" text-anchor="start" font-size="14" font-weight="700" fill="#374151">Pipeline VERSUS — flux de traitement</text>
 
   <!-- ══════ COLONNE GAUCHE : PIPELINE ══════ -->
 
@@ -2086,7 +2031,7 @@ def main():
         st.markdown("""
         <div class="guide-section">
             <p>Tous les paramètres sont accessibles dans la barre latérale. Les vignettes colorées
-            sous le logo versus CLAUDE affichent leur état en temps réel. Un avertissement apparaît sous
+            sous le logo VERSUS affichent leur état en temps réel. Un avertissement apparaît sous
             chaque paramètre modifié si un alignement existe déjà.</p>
             <p>
                 <b>Exclure les stopwords</b> — Agit en amont sur les embeddings (classement et alignement).
@@ -2115,15 +2060,13 @@ def main():
 
 # =================================================================
 #  Rendu HTML des alignements
-#  Correspondances (vert) / Suppressions (rouge) / Insertions (bleu)
+#  Rendu HTML des alignements
 # =================================================================
 
 def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, raw_scores=None):
     ctx = 50
     
     COLOR_MATCH = "rgba(16,185,129,0.35)"
-    COLOR_SUPPRESS = "rgba(239,68,68,0.4)"
-    COLOR_INSERT = "rgba(59,130,246,0.4)"
     BORDER_COLOR = "#10b981"
 
     import re as _re
@@ -2150,8 +2093,6 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
         .ctrls{display:flex;align-items:center;gap:1rem;padding:.5rem 1rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-size:.75rem;flex-wrap:wrap}
         .ctrls label{display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;color:#374151}
         .ctrls input[type=checkbox]{accent-color:#10b981;width:14px;height:14px}
-        .lbl-sup{color:#dc2626;font-weight:600}
-        .lbl-ins{color:#2563eb;font-weight:600}
         .lbl-cw{color:#059669;font-weight:600}
         .lbl-sel{color:#6b7280;font-weight:500}
         .sel-check{accent-color:#2563eb !important}
@@ -2188,15 +2129,6 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
     
     for i, match in enumerate(matches):
         pos1, pos2 = match[0], match[1]
-        n_supp = len(match[2]) if len(match) > 2 and match[2] else 0
-        n_ins = len(match[3]) if len(match) > 3 and match[3] else 0
-
-        counts = []
-        if n_supp > 0:
-            counts.append(f'{n_supp} supp.')
-        if n_ins > 0:
-            counts.append(f'{n_ins} ins.')
-        count_str = f'<span class="cnt">{" · ".join(counts)}</span>' if counts else ''
 
         # Récupération des scores depuis _raw_scores
         rs = (raw_scores or {}).get((pos1, pos2), {})
@@ -2239,14 +2171,12 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
         html += f"""
         <div class="m" style="border:2px solid {BORDER_COLOR}" id="block_{i}">
             <div class="mh">
-                <span>#{start_offset+i+1}{count_str}{scores_badge}</span>
+                <span>#{start_offset+i+1}{scores_badge}</span>
                 <div><button class="bt" onclick="c({i},-100)">−</button><button class="bt" onclick="r({i})">Reset</button><button class="bt" onclick="c({i},100)">+</button></div>
             </div>
             <div class="ctrls">
                 <label><input type="checkbox" id="chk_sel_{i}" class="sel-check" onchange="updateSelCount()"><span class="lbl-sel">Sélectionner</span></label>
                 <span style="color:#d1d5db">│</span>
-                <label><input type="checkbox" id="chk_sup_{i}" onchange="u({i})"><span class="lbl-sup">Suppressions</span></label>
-                <label><input type="checkbox" id="chk_ins_{i}" onchange="u({i})"><span class="lbl-ins">Insertions</span></label>
                 <label><input type="checkbox" id="chk_cw_{i}" onchange="u({i})"><span class="lbl-cw">Mots communs</span></label>
             </div>
             <div class="mb">
@@ -2260,11 +2190,7 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
     
     mjs = []
     for m_item in matches:
-        mjs.append([
-            list(m_item[0]), list(m_item[1]),
-            list(m_item[2]) if len(m_item) > 2 and m_item[2] else [],
-            list(m_item[3]) if len(m_item) > 3 and m_item[3] else []
-        ])
+        mjs.append([list(m_item[0]), list(m_item[1])])
     
     # Escape stopwords for JS
     sw_escaped = json.dumps(sorted(list(stopwords)))
@@ -2273,7 +2199,7 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
     <script>
     const t1=`{t1}`,t2=`{t2}`,m={json.dumps(mjs)};
     const startOffset={start_offset};
-    const BG='{COLOR_MATCH}',SUP='{COLOR_SUPPRESS}',INS='{COLOR_INSERT}';
+    const BG='{COLOR_MATCH}';
     const stopWords=new Set({sw_escaped});
     let cs=new Array(m.length).fill({ctx});
     let allSelected=false;
@@ -2305,50 +2231,22 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
         }});
     }}
     
-    function hPanel(t,c,p,diffs,showDiff,showCW,diffClass,cwSet){{
+    function hPanel(t,c,p,showCW,cwSet){{
         let s=p[0],x=p[1];
-        let pr_raw = t.substring(Math.max(0,s-c),s);
-        let suf_raw = t.substring(x,Math.min(t.length,x+c));
-        
-        let pr = e(pr_raw);
-        let suf = e(suf_raw);
-        
-        let inner='';
-        if(showDiff&&diffs&&diffs.length>0){{
-            diffs.sort((a,b)=>a[0]-b[0]);
-            let l=s;
-            for(let j=0;j<diffs.length;j++){{
-                let seg=e(t.substring(l,diffs[j][0]));
-                if(showCW) seg=markCW(seg,cwSet);
-                inner+='<span style="background:'+BG+';padding:1px 3px;border-radius:2px">'+seg+'</span>';
-                inner+='<span class="'+diffClass+'">'+e(t.substring(diffs[j][0],diffs[j][1]))+'</span>';
-                l=diffs[j][1];
-            }}
-            let last=e(t.substring(l,x));
-            if(showCW) last=markCW(last,cwSet);
-            inner+='<span style="background:'+BG+';padding:1px 3px;border-radius:2px">'+last+'</span>';
-        }} else {{
-            let seg=e(t.substring(s,x));
-            if(showCW) seg=markCW(seg,cwSet);
-            inner='<span style="background:'+BG+';padding:2px 4px;border-radius:3px">'+seg+'</span>';
-        }}
-        
-        // Application du marquage des mots communs sur le contexte aussi
-        if(showCW){{
-            pr = markCW(pr, cwSet);
-            suf = markCW(suf, cwSet);
-        }}
-        
+        let pr = e(t.substring(Math.max(0,s-c),s));
+        let suf = e(t.substring(x,Math.min(t.length,x+c)));
+        let seg = e(t.substring(s,x));
+        if(showCW) seg=markCW(seg,cwSet);
+        let inner='<span style="background:'+BG+';padding:2px 4px;border-radius:3px">'+seg+'</span>';
+        if(showCW){{ pr=markCW(pr,cwSet); suf=markCW(suf,cwSet); }}
         return pr+inner+suf;
     }}
     
     function u(i){{
-        let ss=document.getElementById('chk_sup_'+i).checked;
-        let si=document.getElementById('chk_ins_'+i).checked;
         let cw=document.getElementById('chk_cw_'+i).checked;
         let cwSet=cw?getBlockCW(i):new Set();
-        document.getElementById('a'+i).innerHTML=hPanel(t1,cs[i],m[i][0],m[i][2],ss,cw,'sup',cwSet);
-        document.getElementById('b'+i).innerHTML=hPanel(t2,cs[i],m[i][1],m[i][3],si,cw,'ins',cwSet);
+        document.getElementById('a'+i).innerHTML=hPanel(t1,cs[i],m[i][0],cw,cwSet);
+        document.getElementById('b'+i).innerHTML=hPanel(t2,cs[i],m[i][1],cw,cwSet);
     }}
     
     function c(i,d){{cs[i]=Math.max({ctx},cs[i]+d);u(i)}}
@@ -2367,15 +2265,13 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
         let sel=[];
         for(let i=0;i<m.length;i++)if(document.getElementById('chk_sel_'+i).checked)sel.push(i);
         if(sel.length===0){{alert('Sélectionnez au moins un bloc à exporter.');return;}}
-        let rows=[['num','pos_source','pos_cible','texte_source','texte_cible','nb_suppressions','nb_insertions']];
+        let rows=[['num','pos_source','pos_cible','texte_source','texte_cible']];
         for(let k=0;k<sel.length;k++){{
             let i=sel[k];
             let p1=m[i][0],p2=m[i][1];
             let src=t1.substring(p1[0],p1[1]).substring(0,200);
             let tgt=t2.substring(p2[0],p2[1]).substring(0,200);
-            let ns=m[i][2]?m[i][2].length:0;
-            let ni=m[i][3]?m[i][3].length:0;
-            rows.push([(startOffset+i+1),p1[0]+'-'+p1[1],p2[0]+'-'+p2[1],'"'+src.replace(/"/g,'""')+'"','"'+tgt.replace(/"/g,'""')+'"',ns,ni]);
+            rows.push([(startOffset+i+1),p1[0]+'-'+p1[1],p2[0]+'-'+p2[1],'"'+src.replace(/"/g,'""')+'"','"'+tgt.replace(/"/g,'""')+'"']);
         }}
         let csv=rows.map(r=>r.join(',')).join('\\n');
         let blob=new Blob([csv],{{type:'text/csv;charset=utf-8;'}});

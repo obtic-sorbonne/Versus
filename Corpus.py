@@ -12,7 +12,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import re
-from utils import compute_tfidf_weights, compute_bm25_weights, normalize_embeddings
+from utils import compute_tfidf_weights, compute_bm25_weights, normalize_embeddings, BM25
 from Config import ComparisonConfig
 
 
@@ -167,8 +167,41 @@ class Corpus:
         corpus_matrix = corpus.vectorize_corpus(model)
 
         source_vector = corpus_matrix[index].reshape(1, -1)
-        similarities = cosine_similarity(source_vector, corpus_matrix)[0]
-        
+        cosine_scores = cosine_similarity(source_vector, corpus_matrix)[0]
+
+        # ── Score BM25 doc-vs-corpus pour le ranking final ──
+        corpus_texts = [d.text.origin_content for d in corpus.documents]
+        source_text  = corpus_texts[index]
+        query_words  = source_text.lower().split()
+
+        bm25_index = BM25(corpus_texts, k1=self.config.bm25_k1, b=self.config.bm25_b)
+
+        # Score BM25 de chaque document du corpus vis-à-vis des mots de la source
+        avgdl = bm25_index.avgdl
+        k1, b = bm25_index.k1, bm25_index.b
+        bm25_per_doc = np.zeros(len(corpus.documents))
+        for doc_idx, doc_freq in enumerate(bm25_index.doc_freqs):
+            dl = sum(doc_freq.values())
+            score = 0.0
+            for word in query_words:
+                word_id = bm25_index.vocab.get(word, -1)
+                if word_id < 0:
+                    continue
+                tf = doc_freq.get(word_id, 0)
+                idf = bm25_index.idf.get(word_id, 0.0)
+                score += idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / max(avgdl, 1)))
+            bm25_per_doc[doc_idx] = score
+
+        bm25_min, bm25_max = bm25_per_doc.min(), bm25_per_doc.max()
+        if bm25_max > bm25_min:
+            bm25_norm = (bm25_per_doc - bm25_min) / (bm25_max - bm25_min)
+        else:
+            bm25_norm = np.ones_like(bm25_per_doc)
+
+        # Fusion : α × cosinus + (1-α) × BM25  — même forme (n_docs,)
+        alpha = self.config.semantic_weight  # 0.60 par défaut
+        similarities = alpha * cosine_scores + (1.0 - alpha) * bm25_norm
+
         best_indices = np.argsort(similarities)[::-1]
         
         sorted_corpus = Corpus(config=self.config)
