@@ -30,12 +30,15 @@ class BM25:
         self.k1 = k1
         self.b = b
         self.corpus_size = len(corpus)
-        self.avgdl = sum(len(doc.split()) for doc in corpus) / max(self.corpus_size, 1)
-        
         self.vocab = {}
         self.idf = {}
         self.doc_freqs = []
-        
+
+        if not corpus:
+            self.avgdl = 0.0
+            return
+
+        self.avgdl = sum(len(doc.split()) for doc in corpus) / self.corpus_size
         self._build_vocab(corpus)
         self._calc_idf()
     
@@ -64,6 +67,8 @@ class BM25:
     
     def get_sentence_weights(self, sentences: List[str]) -> np.ndarray:
         """Poids BM25 pour chaque phrase."""
+        if not self.vocab:
+            return np.ones(len(sentences))
         weights = []
         for sentence in sentences:
             words = sentence.lower().split()

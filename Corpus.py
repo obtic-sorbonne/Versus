@@ -47,7 +47,10 @@ class Corpus:
         return f"Document \"{document.name}\" déjà présent"
 
     def get_doc_by_name(self, name):
-        return self.documents[self.get_documents_names().index(name)]
+        names = self.get_documents_names()
+        if name not in names:
+            raise KeyError(f"Document '{name}' introuvable dans le corpus")
+        return self.documents[names.index(name)]
     
     def get_documents_names(self):
         return [d.name for d in self.documents]
@@ -61,7 +64,8 @@ class Corpus:
 
     def __add__(self, corpus_2):
         corpus_sum = Corpus(config=self.config)
-        corpus_sum.documents = self.documents + [d for d in corpus_2.documents if d.name not in self.get_documents_names()]
+        existing_names = set(self.get_documents_names())
+        corpus_sum.documents = self.documents + [d for d in corpus_2.documents if d.name not in existing_names]
         return corpus_sum
 
     def __sub__(self, document, inplace=False):

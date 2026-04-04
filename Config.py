@@ -68,6 +68,9 @@ class ComparisonConfig:
     # Métadonnées
     profile_name: str = "custom"
     created_at: str = ""
+
+    # Debug
+    debug: bool = False
     
     def __post_init__(self):
         if not self.created_at:

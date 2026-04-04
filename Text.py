@@ -41,8 +41,6 @@ class Text:
         return self
 
     def n_grams(self, n=1):
-        if n == 1:
-            return self.words   
         return [self.words[i:i+n] for i in range(len(self.words)-n+1)]
 
     def remove_stopwords(self):
@@ -100,13 +98,16 @@ class Text:
         result = []
         cursor = 0
         for s in sentences:
-            key = s[:40].strip()
+            key = s[:40]
             pos = origin.find(key, cursor)
             if pos == -1:
-                pos = cursor           # fallback
+                # fallback : cherche sans le début pour les cas de normalisation
+                pos = origin.find(s[:20].strip(), cursor)
+            if pos == -1:
+                pos = cursor
             end = pos + len(s)
             result.append((pos, end, s))
-            cursor = pos + 1
+            cursor = end  # avance après la fin de la phrase, jamais en arrière
 
         self.sentences = [Sentence(start, content) for start, end, content in result]
         for i, (start, end, _) in enumerate(result):

@@ -46,10 +46,11 @@ class PairText:
         Utiliser compute_diffs() pour calculer les suppressions/insertions
         sur un sous-ensemble de résultats.
         """
-        import time as _time
-        _profile = {}
-        _t0 = _time.time()
-        
+        if self.config.debug:
+            import time as _time
+            _profile = {}
+            _t0 = _time.time()
+
         if model is None:
             model = SentenceTransformer(self.config.model_name)
 
@@ -57,53 +58,57 @@ class PairText:
             score_threshold = self.config.similarity_threshold
 
         # ── Passe 1 : alignement par phrases ──
-        _t = _time.time()
+        if self.config.debug:
+            _t = _time.time()
         raw_alignments = self._align_sentences(model, score_threshold)
-        _profile['Passe 1 (phrases)'] = _time.time() - _t
+        if self.config.debug:
+            _profile['Passe 1 (phrases)'] = _time.time() - _t
 
         # ── Passe 2 : affinage n-grams sur zones intermédiaires ──
         if self.config.ngram_refinement:
-            _t = _time.time()
+            if self.config.debug:
+                _t = _time.time()
             extra = self._refine_intermediate_zones(
                 raw_alignments, model, n, score_threshold
             )
             raw_alignments = self._merge_alignments(raw_alignments, extra)
-            _profile['Passe 2 (n-grams)'] = _time.time() - _t
+            if self.config.debug:
+                _profile['Passe 2 (n-grams)'] = _time.time() - _t
 
         # ── Agrégation bidirectionnelle ──
         if self.config.bidirectional:
-            _t = _time.time()
-            reverse_alignments = self._align_sentences_reverse(model, score_threshold)
-            _profile['Bidirectionnel (phrases)'] = _time.time() - _t
-            if self.config.ngram_refinement:
+            if self.config.debug:
                 _t = _time.time()
+            reverse_alignments = self._align_sentences(model, score_threshold, reverse=True)
+            if self.config.debug:
+                _profile['Bidirectionnel (phrases)'] = _time.time() - _t
+            if self.config.ngram_refinement:
+                if self.config.debug:
+                    _t = _time.time()
                 extra_rev = self._refine_intermediate_zones(
                     reverse_alignments, model, n, score_threshold
                 )
                 reverse_alignments = self._merge_alignments(reverse_alignments, extra_rev)
-                _profile['Bidirectionnel (n-grams)'] = _time.time() - _t
+                if self.config.debug:
+                    _profile['Bidirectionnel (n-grams)'] = _time.time() - _t
             raw_alignments = self._merge_alignments(raw_alignments, reverse_alignments)
 
-        # ── Stocker les alignements bruts (sans diff) ──
-        _t = _time.time()
-
         # ── Fusion sémantique / lexicale (70/30 par défaut) ──
+        if self.config.debug:
+            _t = _time.time()
         result = self._apply_combined_score(raw_alignments, score_threshold)
 
-        _profile['Préparation résultats'] = _time.time() - _t
-
-        _profile['TOTAL'] = _time.time() - _t0
-        
-        # Afficher le profiling dans la console
-        print("\n" + "=" * 50)
-        print("  PROFILING compare_n_grams()")
-        print("=" * 50)
-        for step, elapsed in _profile.items():
-            bar = "█" * int(elapsed / _profile['TOTAL'] * 30) if _profile['TOTAL'] > 0 else ""
-            print(f"  {step:30s} {elapsed:7.2f}s  {bar}")
-        print("=" * 50 + "\n")
-        
-        self._last_profile = _profile
+        if self.config.debug:
+            _profile['Préparation résultats'] = _time.time() - _t
+            _profile['TOTAL'] = _time.time() - _t0
+            print("\n" + "=" * 50)
+            print("  PROFILING compare_n_grams()")
+            print("=" * 50)
+            for step, elapsed in _profile.items():
+                bar = "█" * int(elapsed / _profile['TOTAL'] * 30) if _profile['TOTAL'] > 0 else ""
+                print(f"  {step:30s} {elapsed:7.2f}s  {bar}")
+            print("=" * 50 + "\n")
+            self._last_profile = _profile
 
         return result
 
@@ -218,36 +223,19 @@ class PairText:
     #  Passe 1 : Alignement par phrases
     # =================================================================
 
-    def _align_sentences(self, model, score_threshold):
+    def _align_sentences(self, model, score_threshold, reverse=False):
         """
         Encode les phrases, recherche ANN ou cosinus exact,
         applique seuil fixe ou adaptatif.
+        Si reverse=True, aligne dans la direction inverse (target → source).
         Retourne [(pos1, pos2, score), ...].
         """
-        sentences1 = self.text1.sentences
-        sentences2 = self.text2.sentences
-
-        if not sentences1 or not sentences2:
-            return []
-
-        contents1 = [s.content for s in sentences1]
-        contents2 = [s.content for s in sentences2]
-
-        emb1 = model.encode(contents1, show_progress_bar=False, batch_size=256)
-        emb2 = model.encode(contents2, show_progress_bar=False, batch_size=256)
-
-        emb1 = emb1 / (np.linalg.norm(emb1, axis=1, keepdims=True) + 1e-10)
-        emb2 = emb2 / (np.linalg.norm(emb2, axis=1, keepdims=True) + 1e-10)
-
-        if FAISS_AVAILABLE and len(sentences2) > 50:
-            return self._search_ann(emb1, emb2, sentences1, sentences2, score_threshold)
+        if reverse:
+            sentences1 = self.text2.sentences
+            sentences2 = self.text1.sentences
         else:
-            return self._search_exact(emb1, emb2, sentences1, sentences2, score_threshold)
-
-    def _align_sentences_reverse(self, model, score_threshold):
-        """Alignement dans la direction inverse (target → source)."""
-        sentences1 = self.text2.sentences
-        sentences2 = self.text1.sentences
+            sentences1 = self.text1.sentences
+            sentences2 = self.text2.sentences
 
         if not sentences1 or not sentences2:
             return []
@@ -266,7 +254,9 @@ class PairText:
         else:
             raw = self._search_exact(emb1, emb2, sentences1, sentences2, score_threshold)
 
-        return [(pos2, pos1, score) for (pos1, pos2, score) in raw]
+        if reverse:
+            return [(pos2, pos1, score) for (pos1, pos2, score) in raw]
+        return raw
 
     def _search_ann(self, emb1, emb2, sentences1, sentences2, score_threshold):
         """Recherche ANN via FAISS."""

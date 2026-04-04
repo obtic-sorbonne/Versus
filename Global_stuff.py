@@ -7,6 +7,7 @@ from sentence_transformers import SentenceTransformer
 import nltk
 nltk.download('stopwords', quiet=True)
 import re
+from pathlib import Path
 
 
 class Global_stuff:
@@ -18,8 +19,10 @@ class Global_stuff:
     STOPWORDS_TOGGLED = False  # Contrôle si les stopwords sont actifs
     
     try:
-        STOPWORDS = set([word.strip() for word in open("stopwords.txt", 'r', encoding='utf-8').readlines()])
-    except FileNotFoundError:
+        _stopwords_path = Path(__file__).parent / "stopwords.txt"
+        STOPWORDS = set(_stopwords_path.read_text(encoding='utf-8').splitlines())
+        STOPWORDS.discard('')
+    except (FileNotFoundError, IOError):
         STOPWORDS = set(nltk.corpus.stopwords.words(LANGUAGE))
 
     COLORS = {

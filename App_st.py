@@ -16,6 +16,7 @@ from Config import ComparisonConfig, get_document_hash
 from Export import ComparisonExporter
 from sentence_transformers import SentenceTransformer
 from collections import Counter
+import html as _html_escape
 import json
 import io
 import time
@@ -256,14 +257,14 @@ def read_file(uploaded_file):
             import docx
             doc = docx.Document(io.BytesIO(uploaded_file.getvalue()))
             return '\n'.join([p.text for p in doc.paragraphs])
-        except:
+        except Exception:
             return None
     elif name.endswith('.pdf'):
         try:
             import PyPDF2
             reader = PyPDF2.PdfReader(io.BytesIO(uploaded_file.getvalue()))
             return '\n'.join([p.extract_text() or '' for p in reader.pages])
-        except:
+        except Exception:
             return None
     return None
 
@@ -431,9 +432,10 @@ def render_heatmap(alignments, source_text, target_text, name1, name2):
         points.append({"x": round(x, 4), "y": round(y, 4), "s": round(score, 3), "r": round(r, 1)})
     
     points_json = json.dumps(points)
-    n1_safe = name1.replace("'", "\\'")
-    n2_safe = name2.replace("'", "\\'")
-    
+    # json.dumps produit un string JS correctement échappé (backslash, guillemets, etc.)
+    n1_safe = json.dumps(name1)[1:-1]
+    n2_safe = json.dumps(name2)[1:-1]
+
     html = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
         *{margin:0;padding:0;box-sizing:border-box}
         body{font-family:system-ui,sans-serif;background:#fff}
@@ -568,9 +570,9 @@ def render_radar(stats1, stats2, name1, name2, stopwords):
     dots1 = "".join(f'<circle cx="{polar(i, axes[i][1])[0]}" cy="{polar(i, axes[i][1])[1]}" r="3" fill="#2563eb"/>' for i in range(n))
     dots2 = "".join(f'<circle cx="{polar(i, axes[i][2])[0]}" cy="{polar(i, axes[i][2])[1]}" r="3" fill="#f59e0b"/>' for i in range(n))
     
-    n1_safe = name1[:20]
-    n2_safe = name2[:20]
-    
+    n1_safe = _html_escape.escape(name1[:20])
+    n2_safe = _html_escape.escape(name2[:20])
+
     html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
         *{{margin:0;padding:0;box-sizing:border-box}}
         body{{font-family:system-ui,sans-serif;background:#fff}}
@@ -739,8 +741,8 @@ def render_timeline(alignments, source_text, target_text, name1, name2):
     pad_l, pad_r = 70, 30
     bw = W - pad_l - pad_r
     
-    n1_safe = name1[:30].replace("'", "\\'")
-    n2_safe = name2[:30].replace("'", "\\'")
+    n1_safe = _html_escape.escape(name1[:30])
+    n2_safe = _html_escape.escape(name2[:30])
     
     # Barres de fond
     svg = f'<rect x="{pad_l}" y="{y1}" width="{bw}" height="{bar_h}" rx="4" fill="#f1f5f9" stroke="#e2e8f0"/>\n'
@@ -1013,8 +1015,8 @@ def render_density(alignments, source_text, target_text, name1, name2, n_bins=30
     
     d1_json = json.dumps(density1)
     d2_json = json.dumps(density2)
-    n1_safe = name1[:20].replace("'", "\\'")
-    n2_safe = name2[:20].replace("'", "\\'")
+    n1_safe = json.dumps(name1[:20])[1:-1]
+    n2_safe = json.dumps(name2[:20])[1:-1]
     
     html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
         *{{margin:0;padding:0;box-sizing:border-box}}
