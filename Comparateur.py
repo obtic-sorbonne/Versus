@@ -1,24 +1,16 @@
 """
 Comparateur : alignement fin Document–Document.
 
-Architecture en entonnoir :
-  1. Segmentation par défaut en phrases
+Architecture :
+  1. Segmentation par phrases
   2. Alignement par similarité cosinus (ANN/FAISS ou exact)
-  3. Détection des correspondances, suppressions et insertions
-  4. Affinage optionnel par n-grams glissants sur zones intermédiaires
-  5. Agrégation bidirectionnelle optionnelle
-
-Visualisation par segment aligné :
-  - Correspondances (vert) : texte commun aux deux segments
-  - Suppressions (rouge)   : texte présent dans la source, absent de la cible
-  - Insertions (bleu)      : texte présent dans la cible, absent de la source
+  3. Fusion sémantique / lexicale (score combiné)
 """
 
 import numpy as np
 from Global_stuff import Global_stuff
 from difflib import SequenceMatcher
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sentence_transformers import SentenceTransformer
 from Config import ComparisonConfig
 
@@ -36,83 +28,29 @@ class PairText:
         self.config = config or ComparisonConfig()
 
     # =================================================================
-    #  Méthode principale — point d'entrée
+    #  Méthode principale
     # =================================================================
 
     def compare_n_grams(self, n=3, model=None, score_threshold=None):
         """
-        Comparaison complète en entonnoir.
-        Retourne une liste de tuples (pos1, pos2, score) sans diff.
-        Utiliser compute_diffs() pour calculer les suppressions/insertions
-        sur un sous-ensemble de résultats.
+        Comparaison complète.
+        Retourne une liste de tuples (pos1, pos2, score).
         """
-        import time as _time
-        _profile = {}
-        _t0 = _time.time()
-        
         if model is None:
             model = SentenceTransformer(self.config.model_name)
 
         if score_threshold is None:
             score_threshold = self.config.similarity_threshold
 
-        # ── Passe 1 : alignement par phrases ──
-        _t = _time.time()
         raw_alignments = self._align_sentences(model, score_threshold)
-        _profile['Passe 1 (phrases)'] = _time.time() - _t
+        return self._apply_combined_score(raw_alignments)
 
-        # ── Passe 2 : affinage n-grams sur zones intermédiaires ──
-        if self.config.ngram_refinement:
-            _t = _time.time()
-            extra = self._refine_intermediate_zones(
-                raw_alignments, model, n, score_threshold
-            )
-            raw_alignments = self._merge_alignments(raw_alignments, extra)
-            _profile['Passe 2 (n-grams)'] = _time.time() - _t
-
-        # ── Agrégation bidirectionnelle ──
-        if self.config.bidirectional:
-            _t = _time.time()
-            reverse_alignments = self._align_sentences_reverse(model, score_threshold)
-            _profile['Bidirectionnel (phrases)'] = _time.time() - _t
-            if self.config.ngram_refinement:
-                _t = _time.time()
-                extra_rev = self._refine_intermediate_zones(
-                    reverse_alignments, model, n, score_threshold
-                )
-                reverse_alignments = self._merge_alignments(reverse_alignments, extra_rev)
-                _profile['Bidirectionnel (n-grams)'] = _time.time() - _t
-            raw_alignments = self._merge_alignments(raw_alignments, reverse_alignments)
-
-        # ── Stocker les alignements bruts (sans diff) ──
-        _t = _time.time()
-
-        # ── Fusion sémantique / lexicale (70/30 par défaut) ──
-        result = self._apply_combined_score(raw_alignments, score_threshold)
-
-        _profile['Préparation résultats'] = _time.time() - _t
-
-        _profile['TOTAL'] = _time.time() - _t0
-        
-        # Afficher le profiling dans la console
-        print("\n" + "=" * 50)
-        print("  PROFILING compare_n_grams()")
-        print("=" * 50)
-        for step, elapsed in _profile.items():
-            bar = "█" * int(elapsed / _profile['TOTAL'] * 30) if _profile['TOTAL'] > 0 else ""
-            print(f"  {step:30s} {elapsed:7.2f}s  {bar}")
-        print("=" * 50 + "\n")
-        
-        self._last_profile = _profile
-
-        return result
-
-    def _apply_combined_score(self, alignments, score_threshold):
+    def _apply_combined_score(self, alignments):
         """
-        Fusionne le score cosinus (embeddings), le score Jaccard et le score Overlap (lexicaux)
-        selon Option B : 60% sémantique + 20% Jaccard + 20% Overlap (normalisation min-max).
-        Stocke les scores bruts dans self._raw_scores pour permettre le re-tri ultérieur.
-        Retourne [(pos1, pos2, score_combiné), ...].
+        Fusionne cosinus (sémantique), Jaccard et Overlap (lexicaux).
+        60% sémantique + 20% Jaccard + 20% Overlap (normalisation min-max).
+        Stocke les scores bruts dans self._raw_scores pour le re-tri.
+        Optimisation : w1/w2 calculés une seule fois par alignement.
         """
         import re as _re
 
@@ -122,30 +60,24 @@ class PairText:
             return {w.lower() for w in _re.findall(r'\b\w+\b', t)
                     if len(w) > 2 and w.lower() not in sw}
 
-        def jaccard(pos1, pos2):
-            w1 = _words(self.text1.origin_content[pos1[0]:pos1[1]])
-            w2 = _words(self.text2.origin_content[pos2[0]:pos2[1]])
-            if not w1 and not w2:
-                return 0.0
-            return len(w1 & w2) / len(w1 | w2)
-
-        def overlap(pos1, pos2):
-            w1 = _words(self.text1.origin_content[pos1[0]:pos1[1]])
-            w2 = _words(self.text2.origin_content[pos2[0]:pos2[1]])
-            if not w1 or not w2:
-                return 0.0
-            return len(w1 & w2) / min(len(w1), len(w2))
-
         if not alignments:
             self._raw_scores = {}
             return []
 
-        # Calcul des scores bruts
-        cosine_scores = [score for (_, _, score) in alignments]
-        jac_scores    = [jaccard(pos1, pos2) for (pos1, pos2, _) in alignments]
-        ovl_scores    = [overlap(pos1, pos2) for (pos1, pos2, _) in alignments]
+        cosine_scores = []
+        jac_scores    = []
+        ovl_scores    = []
 
-        # Normalisation min-max de chaque série
+        # Un seul calcul de w1/w2 par alignement pour Jaccard ET Overlap
+        for (pos1, pos2, score) in alignments:
+            cosine_scores.append(score)
+            w1 = _words(self.text1.origin_content[pos1[0]:pos1[1]])
+            w2 = _words(self.text2.origin_content[pos2[0]:pos2[1]])
+            inter = len(w1 & w2)
+            union = len(w1 | w2)
+            jac_scores.append(inter / union if union else 0.0)
+            ovl_scores.append(inter / min(len(w1), len(w2)) if w1 and w2 else 0.0)
+
         def minmax(values):
             lo, hi = min(values), max(values)
             if hi == lo:
@@ -156,10 +88,9 @@ class PairText:
         jac_norm = minmax(jac_scores)
         ovl_norm = minmax(ovl_scores)
 
-        sw_ = self.config.semantic_weight   # 0.60
-        lw_ = self.config.lexical_weight    # 0.40 → 20% Jaccard + 20% Overlap
+        sw_ = self.config.semantic_weight
+        lw_ = self.config.lexical_weight
 
-        # Stockage des scores bruts indexés par position pour re-tri ultérieur
         self._raw_scores = {}
         result = []
         for idx, (pos1, pos2, _) in enumerate(alignments):
@@ -172,7 +103,6 @@ class PairText:
             }
             result.append((pos1, pos2, combined))
 
-        # Tri par défaut : score combiné décroissant
         result.sort(key=lambda x: x[2], reverse=True)
         return result
 
@@ -196,33 +126,54 @@ class PairText:
         Calcule les suppressions/insertions pour un sous-ensemble d'alignements.
         Entrée:  [(pos1, pos2, score), ...]
         Sortie:  [(pos1, pos2, suppressions, insertions), ...]
+
+        Optimisations :
+        - Diff au niveau MOT (au lieu de caractère) → beaucoup plus rapide
+        - autojunk=False pour éviter le surcoût de détection automatique
+        - Parallélisation via ThreadPoolExecutor (4 workers)
         """
-        result = []
-        for item in alignments:
+        import re
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _tokenize(text, base_offset):
+            """Retourne liste de (mot, start_abs, end_abs)."""
+            return [(m.group(), base_offset + m.start(), base_offset + m.end())
+                    for m in re.finditer(r'\S+', text)]
+
+        def _diff_one(item):
             pos1, pos2 = item[0], item[1]
             t1 = self.text1[pos1]
             t2 = self.text2[pos2]
 
-            suppressions, insertions = [], []
-            s = SequenceMatcher(lambda x: x == " ", t1, t2)
-            for action, i1, i2, j1, j2 in s.get_opcodes():
-                if action == 'delete' or action == 'replace':
-                    suppressions.append((pos1[0] + i1, pos1[0] + i2))
-                if action == 'insert' or action == 'replace':
-                    insertions.append((pos2[0] + j1, pos2[0] + j2))
+            tokens1 = _tokenize(t1, pos1[0])
+            tokens2 = _tokenize(t2, pos2[0])
 
-            result.append((pos1, pos2, suppressions, insertions))
-        return result
+            words1 = [w for w, _, _ in tokens1]
+            words2 = [w for w, _, _ in tokens2]
+
+            suppressions, insertions = [], []
+            sm = SequenceMatcher(None, words1, words2, autojunk=False)
+            for action, i1, i2, j1, j2 in sm.get_opcodes():
+                if action in ('delete', 'replace') and i1 < i2:
+                    suppressions.append((tokens1[i1][1], tokens1[i2 - 1][2]))
+                if action in ('insert', 'replace') and j1 < j2:
+                    insertions.append((tokens2[j1][1], tokens2[j2 - 1][2]))
+
+            return (pos1, pos2, suppressions, insertions)
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            return list(executor.map(_diff_one, alignments))
 
     # =================================================================
-    #  Passe 1 : Alignement par phrases
+    #  Alignement par phrases
     # =================================================================
 
     def _align_sentences(self, model, score_threshold):
         """
-        Encode les phrases, recherche ANN ou cosinus exact,
-        applique seuil fixe ou adaptatif.
+        Encode les phrases, recherche ANN ou cosinus exact.
         Retourne [(pos1, pos2, score), ...].
+        Réutilise sentence.vectorized si déjà calculé par vectorize_document(),
+        évitant ainsi un double appel coûteux à model.encode().
         """
         sentences1 = self.text1.sentences
         sentences2 = self.text2.sentences
@@ -230,11 +181,17 @@ class PairText:
         if not sentences1 or not sentences2:
             return []
 
-        contents1 = [s.content for s in sentences1]
-        contents2 = [s.content for s in sentences2]
+        if all(s.vectorized is not None for s in sentences1):
+            emb1 = np.array([s.vectorized for s in sentences1])
+        else:
+            emb1 = model.encode([s.content for s in sentences1],
+                                 show_progress_bar=False, batch_size=256)
 
-        emb1 = model.encode(contents1, show_progress_bar=False, batch_size=256)
-        emb2 = model.encode(contents2, show_progress_bar=False, batch_size=256)
+        if all(s.vectorized is not None for s in sentences2):
+            emb2 = np.array([s.vectorized for s in sentences2])
+        else:
+            emb2 = model.encode([s.content for s in sentences2],
+                                 show_progress_bar=False, batch_size=256)
 
         emb1 = emb1 / (np.linalg.norm(emb1, axis=1, keepdims=True) + 1e-10)
         emb2 = emb2 / (np.linalg.norm(emb2, axis=1, keepdims=True) + 1e-10)
@@ -243,30 +200,6 @@ class PairText:
             return self._search_ann(emb1, emb2, sentences1, sentences2, score_threshold)
         else:
             return self._search_exact(emb1, emb2, sentences1, sentences2, score_threshold)
-
-    def _align_sentences_reverse(self, model, score_threshold):
-        """Alignement dans la direction inverse (target → source)."""
-        sentences1 = self.text2.sentences
-        sentences2 = self.text1.sentences
-
-        if not sentences1 or not sentences2:
-            return []
-
-        contents1 = [s.content for s in sentences1]
-        contents2 = [s.content for s in sentences2]
-
-        emb1 = model.encode(contents1, show_progress_bar=False, batch_size=256)
-        emb2 = model.encode(contents2, show_progress_bar=False, batch_size=256)
-
-        emb1 = emb1 / (np.linalg.norm(emb1, axis=1, keepdims=True) + 1e-10)
-        emb2 = emb2 / (np.linalg.norm(emb2, axis=1, keepdims=True) + 1e-10)
-
-        if FAISS_AVAILABLE and len(sentences2) > 50:
-            raw = self._search_ann(emb1, emb2, sentences1, sentences2, score_threshold)
-        else:
-            raw = self._search_exact(emb1, emb2, sentences1, sentences2, score_threshold)
-
-        return [(pos2, pos1, score) for (pos1, pos2, score) in raw]
 
     def _search_ann(self, emb1, emb2, sentences1, sentences2, score_threshold):
         """Recherche ANN via FAISS."""
@@ -320,183 +253,6 @@ class PairText:
         return self._deduplicate(alignments)
 
     # =================================================================
-    #  Passe 2 : Affinage n-grams sur zones intermédiaires
-    # =================================================================
-
-    def _refine_intermediate_zones(self, sentence_alignments, model, n, score_threshold):
-        low, high = self.config.ngram_zone_low, self.config.ngram_zone_high
-
-        best_by_source = {}
-        for (pos1, pos2, score) in sentence_alignments:
-            if pos1 not in best_by_source or score > best_by_source[pos1]:
-                best_by_source[pos1] = score
-
-        sentences1 = self.text1.sentences
-        candidate_indices_1 = set()
-
-        for i, s in enumerate(sentences1):
-            pos = (s.index, s.index + len(s.content))
-            best = best_by_source.get(pos, 0.0)
-            if low <= best <= high:
-                candidate_indices_1.add(i)
-
-        if not candidate_indices_1:
-            return []
-
-        n_grams1 = self.text1.n_grams(n)
-        n_grams2 = self.text2.n_grams(n)
-
-        if not n_grams1 or not n_grams2:
-            return []
-
-        w2s_map = self._word_to_sentence_map(self.text1)
-        sent_ranges = self._sentence_to_ngram_ranges(w2s_map, len(self.text1.words), n)
-
-        margin = n
-        max_ng1 = len(n_grams1)
-        active_set = set()
-        for si in candidate_indices_1:
-            if si in sent_ranges:
-                lo, hi = sent_ranges[si]
-                for idx in range(max(0, lo - margin), min(max_ng1, hi + margin)):
-                    active_set.add(idx)
-
-        if not active_set:
-            return []
-
-        active_idx1 = sorted(active_set)
-        active_idx2 = list(range(len(n_grams2)))
-
-        rows, cols, data = self._compare_tfidf(
-            n_grams1, n_grams2, active_idx1, active_idx2, n, score_threshold
-        )
-
-        if not data:
-            return []
-
-        aggregated = self._aggregate_diagonal(rows, cols, data, n_grams1, n_grams2, n)
-        return [(pos1, pos2, 0.0) for (pos1, pos2) in aggregated]
-
-    # =================================================================
-    #  TF-IDF sur n-grams
-    # =================================================================
-
-    def _compare_tfidf(self, n_grams1, n_grams2, active_idx1, active_idx2, n, score_threshold):
-        content_1 = [" ".join(w.content.lower() for w in n_grams1[i]) for i in active_idx1]
-        content_2 = [" ".join(w.content.lower() for w in n_grams2[j]) for j in active_idx2]
-
-        if not content_1 or not content_2:
-            return [], [], []
-
-        vectorizer = TfidfVectorizer(analyzer='word', token_pattern=r'\S+')
-        vectorizer.fit(content_1 + content_2)
-
-        tfidf_1 = vectorizer.transform(content_1)
-        tfidf_2 = vectorizer.transform(content_2)
-
-        all_rows, all_cols, all_data = [], [], []
-        step = 5000
-
-        for i in range(0, tfidf_1.shape[0], step):
-            end_i = min(i + step, tfidf_1.shape[0])
-            sim_block = cosine_similarity(tfidf_1[i:end_i], tfidf_2)
-
-            if self.config.adaptive_threshold:
-                for local_i in range(sim_block.shape[0]):
-                    global_i = active_idx1[i + local_i]
-                    seg_len = sum(len(w.content) for w in n_grams1[global_i])
-                    th = self.config.get_adaptive_threshold(seg_len)
-                    hits = np.where(sim_block[local_i] >= th)[0]
-                    for j in hits:
-                        all_rows.append(global_i)
-                        all_cols.append(active_idx2[j])
-                        all_data.append(float(sim_block[local_i, j]))
-            else:
-                local_rows, local_cols = np.where(sim_block >= score_threshold)
-                for lr, lc in zip(local_rows, local_cols):
-                    all_rows.append(active_idx1[i + lr])
-                    all_cols.append(active_idx2[lc])
-                    all_data.append(float(sim_block[lr, lc]))
-
-        return all_rows, all_cols, all_data
-
-    # =================================================================
-    #  Mapping mots ↔ phrases
-    # =================================================================
-
-    def _word_to_sentence_map(self, text):
-        sentences = text.sentences
-        if not sentences:
-            return np.zeros(len(text.words), dtype=int)
-        boundaries = []
-        for i, s in enumerate(sentences):
-            start = s.index
-            end = sentences[i + 1].index if i + 1 < len(sentences) else float('inf')
-            boundaries.append((start, end))
-        mapping = np.zeros(len(text.words), dtype=int)
-        sent_idx = 0
-        for w_idx, word in enumerate(text.words):
-            while sent_idx < len(boundaries) - 1 and word.start >= boundaries[sent_idx][1]:
-                sent_idx += 1
-            mapping[w_idx] = sent_idx
-        return mapping
-
-    def _sentence_to_ngram_ranges(self, word_sent_map, n_words, n):
-        n_ngrams = n_words - n + 1
-        if n_ngrams <= 0:
-            return {}
-        ranges = {}
-        current_sent = -1
-        range_start = 0
-        for ng_idx in range(n_ngrams):
-            sent = int(word_sent_map[ng_idx])
-            if sent != current_sent:
-                if current_sent >= 0:
-                    ranges[current_sent] = (range_start, ng_idx)
-                current_sent = sent
-                range_start = ng_idx
-        if current_sent >= 0:
-            ranges[current_sent] = (range_start, n_ngrams)
-        return ranges
-
-    # =================================================================
-    #  Agrégation diagonale
-    # =================================================================
-
-    def _aggregate_diagonal(self, all_rows, all_cols, all_data, n_grams1, n_grams2, n):
-        aggreg = {}
-        to_remove = set()
-        indices = sorted(range(len(all_rows)), key=lambda k: (all_rows[k], all_cols[k]))
-        for idx in indices:
-            row_ind, col_ind = all_rows[idx], all_cols[idx]
-            g1, g2 = n_grams1[row_ind], n_grams2[col_ind]
-            score = all_data[idx]
-            prev_key = (row_ind - 1, col_ind - 1)
-            if prev_key in aggreg and prev_key not in to_remove:
-                prec = aggreg[prev_key]
-                if n > 1:
-                    new_gram1 = list(prec[0][:-n+1]) + list(g1)
-                    new_gram2 = list(prec[1][:-n+1]) + list(g2)
-                else:
-                    new_gram1 = list(prec[0]) + list(g1)
-                    new_gram2 = list(prec[1]) + list(g2)
-                new_score = (prec[2] + score) / 2
-                aggreg[(row_ind, col_ind)] = (new_gram1, new_gram2, new_score)
-                to_remove.add(prev_key)
-            else:
-                aggreg[(row_ind, col_ind)] = (list(g1), list(g2), score)
-        for key in to_remove:
-            aggreg.pop(key, None)
-        result = []
-        for (row, col), (words1, words2, sc) in sorted(aggreg.items(), key=lambda x: x[0][0]):
-            if words1 and words2:
-                result.append((
-                    (words1[0].start, words1[-1].end),
-                    (words2[0].start, words2[-1].end)
-                ))
-        return result
-
-    # =================================================================
     #  Utilitaires
     # =================================================================
 
@@ -513,19 +269,3 @@ class PairText:
             if key not in best or score > best[key][2]:
                 best[key] = (pos1, pos2, score)
         return sorted(best.values(), key=lambda x: x[2], reverse=True)
-
-    def _merge_alignments(self, a1, a2):
-        best = {}
-        for (pos1, pos2, score) in a1 + a2:
-            key = (pos1, pos2)
-            if key not in best or score > best[key][2]:
-                best[key] = (pos1, pos2, score)
-        return sorted(best.values(), key=lambda x: x[2], reverse=True)
-
-    def remove_stopwords_texts(self):
-        for t in (self.text1, self.text2):
-            t.remove_stopwords()
-
-    def set_default_texts(self):
-        for t in (self.text1, self.text2):
-            t.default()

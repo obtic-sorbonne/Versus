@@ -1,9 +1,6 @@
 """
-versus CLAUDE — Interface Streamlit
-Cahier des charges final : phrases par défaut, affinage n-grams ciblé,
-ANN (FAISS), agrégation bidirectionnelle.
-Visualisation : correspondances / suppressions / insertions.
-Statistiques textuelles.
+VERSUS — Interface Streamlit
+Alignement sémantique de textes.
 """
 
 import streamlit as st
@@ -13,21 +10,19 @@ from Document import Document
 from Comparateur import PairText, FAISS_AVAILABLE
 from Global_stuff import Global_stuff
 from Config import ComparisonConfig, get_document_hash
-from Export import ComparisonExporter
+from guide import render_guide
 from sentence_transformers import SentenceTransformer
 from collections import Counter
 import json
 import io
 import time
 import os
-import csv
-from io import StringIO
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".vs_state.json")
 
 st.set_page_config(
-    page_title="versus CLAUDE",
-    page_icon="logo.gif",
+    page_title="VERSUS",
+    page_icon="logo.png",
     layout="wide"
 )
 
@@ -35,8 +30,51 @@ st.markdown("""
 <style>
     .stApp { background-color: #fafbfc !important; }
     .stApp > header { background-color: #ffffff !important; }
-    .stSidebar, .stSidebar > div:first-child, section[data-testid="stSidebar"] { background-color: #ffffff !important; }
     .stMarkdown, .stText, p, span, label { color: #111827 !important; }
+
+    /* Supprimer le padding Streamlit au-dessus du logo */
+    .block-container { padding-top: 0rem !important; padding-bottom: 1rem !important; }
+    [data-testid="stToolbar"] { display: none !important; }
+    #MainMenu {visibility: hidden;}
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background-color: #f8f9fb !important;
+        border-right: 1px solid #e5e7eb !important;
+    }
+    section[data-testid="stSidebar"] > div { padding-top: 0 !important; }
+    [data-testid="collapsedControl"] { display: flex !important; }
+
+    /* Labels sidebar non-cliquables */
+    .sidebar-section-title {
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: #9ca3af;
+        font-weight: 600;
+        margin: 1rem 0 0.5rem 0;
+    }
+    .sidebar-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 4px 0;
+        border-bottom: 1px solid #f1f5f9;
+        font-size: 0.75rem;
+    }
+    .sidebar-row:last-child { border-bottom: none; }
+    .sidebar-key { color: #6b7280; }
+    .sidebar-val { font-weight: 600; color: #111827; max-width: 110px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sidebar-badge {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 10px;
+        font-size: 0.65rem;
+        font-weight: 600;
+    }
+    .badge-green { background: #d1fae5; color: #065f46; }
+    .badge-blue  { background: #dbeafe; color: #1e40af; }
+    .badge-gray  { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
     
     .panel-title {
         font-family: 'JetBrains Mono', monospace;
@@ -65,7 +103,7 @@ st.markdown("""
     .stFileUploader section > button { display: none !important; }
     [data-testid="stFileUploader"] button { display: none !important; }
     [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] { display: none !important; }
-    
+  
     button[kind="primary"] p,
     button[kind="primary"] span,
     button[kind="primary"] div,
@@ -73,11 +111,7 @@ st.markdown("""
     .stButton > button[kind="primary"] span {
         color: white !important;
     }
-    div[data-testid="stDownloadButton"] button p,
-    div[data-testid="stDownloadButton"] button span {
-        color: #111827 !important;
-    }
-
+    
     .info-badge {
         display: inline-block;
         padding: 2px 8px;
@@ -117,8 +151,10 @@ st.markdown("""
         vertical-align: middle;
     }
     
-    #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+
+    /* Masquer la pagination du file_uploader ("Showing page X of Y") */
+    [data-testid="stFileUploaderPagination"] {display: none !important;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -128,9 +164,7 @@ def save_state():
     try:
         data = {
             "align_th":         st.session_state.get("align_th", 0.85),
-            "align_n":          st.session_state.get("align_n", 3),
             "exclude_stopwords":st.session_state.get("exclude_stopwords", False),
-            "scoring_method":   st.session_state.app_config.scoring_method if "app_config" in st.session_state else "bm25",
             "active_tab":       st.session_state.get("active_tab", 0),
             "align_sort_mode":  st.session_state.get("align_sort_mode", "Combinée (60/40)"),
             "source": (
@@ -164,8 +198,6 @@ def init_state():
     if 'app_config' not in st.session_state:
         saved = load_saved_state()
         cfg = ComparisonConfig()
-        if saved.get("scoring_method"):
-            cfg.scoring_method = saved["scoring_method"]
         st.session_state.app_config = cfg
         st.session_state.app_corpus      = Corpus(config=cfg)
         st.session_state.app_corpus_full = Corpus(config=cfg)
@@ -175,7 +207,6 @@ def init_state():
         st.session_state.app_alignments  = []
         st.session_state.app_comparateur = None
         st.session_state.active_tab      = saved.get("active_tab", 0)
-        st.session_state.align_n         = saved.get("align_n", 3)
         st.session_state.align_th        = saved.get("align_th", 0.85)
         st.session_state.app_config.similarity_threshold = st.session_state.align_th
         st.session_state.need_realign    = True
@@ -228,7 +259,6 @@ def reset_all():
     st.session_state.app_alignments = []
     st.session_state.app_comparateur = None
     st.session_state.active_tab = 0
-    st.session_state.align_n = 3
     st.session_state.align_th = 0.85
     st.session_state.need_realign = True
     st.session_state.params_pending = False
@@ -240,11 +270,65 @@ def reset_all():
     st.session_state.source_uploader_key = st.session_state.get('source_uploader_key', 0) + 1
     st.session_state.align_page = 0
     st.session_state.align_sort_mode = "Combinée (60/40)"
+    st.session_state["_cible_display"] = None
 
 
 @st.cache_resource
 def load_model():
-    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    # return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    return SentenceTransformer("sentence-transformers/paraphrase-MiniLM-L3-v2")
+
+
+# =================================================================
+#  Cache global des embeddings de phrases
+# =================================================================
+
+@st.cache_resource
+def get_embedding_cache():
+    """
+    Dictionnaire persistant (niveau processus) pour éviter de recalculer
+    les embeddings d'un même document entre deux lancements d'alignement.
+    Clé  : MD5 du contenu concaténé des phrases.
+    Valeur: ndarray retourné par model.encode().
+    """
+    return {}
+
+
+class CachedEncoderModel:
+    """
+    Wrapper transparent autour de SentenceTransformer.
+    Toute appel à .encode(sentences) est mis en cache :
+    si les mêmes phrases ont déjà été encodées, le résultat est
+    retourné instantanément sans solliciter le GPU/CPU.
+    """
+
+    def __init__(self, model):
+        self._model = model
+        self._cache = get_embedding_cache()
+
+    def encode(self, sentences, **kwargs):
+        import hashlib, time
+
+        if hasattr(sentences, "tolist"):
+            sentences = sentences.tolist()
+        if not isinstance(sentences, (list, tuple)) or len(sentences) == 0:
+            return self._model.encode(sentences, **kwargs)
+
+        raw = "|".join(str(s) for s in sentences)
+        key = hashlib.md5(raw.encode("utf-8", errors="replace")).hexdigest()
+
+        if key in self._cache:
+            print(f"[EmbCache] ✅ HIT  {key[:8]}… {len(sentences)} phrases → 0.000s")
+            return self._cache[key]
+
+        t0 = time.time()
+        self._cache[key] = self._model.encode(sentences, **kwargs)
+        print(f"[EmbCache] 💾 MISS {key[:8]}… {len(sentences)} phrases → {time.time()-t0:.2f}s")
+        return self._cache[key]
+
+    def __getattr__(self, name):
+        # Délègue tous les autres attributs/méthodes au modèle original
+        return getattr(self._model, name)
 
 
 def read_file(uploaded_file):
@@ -268,64 +352,12 @@ def read_file(uploaded_file):
     return None
 
 
-def estimate_computation(n_words1, n_words2, config):
-    n_sent1 = max(n_words1 // 25, 1)
-    n_sent2 = max(n_words2 // 25, 1)
-    sentence_time = (n_sent1 + n_sent2) * 0.03
-    sentence_mem = (n_sent1 + n_sent2) * 384 * 4 / (1024 * 1024)
-    strategy_parts = ["Phrases"]
-    if config.ann_enabled and FAISS_AVAILABLE and n_sent2 > 50:
-        search_time = n_sent1 * 0.001
-        strategy_parts.append("ANN/FAISS")
-    else:
-        search_time = n_sent1 * n_sent2 * 0.00001
-        strategy_parts.append("Exact")
-    refine_time = 0
-    if config.ngram_refinement:
-        n_candidate = int(n_sent1 * 0.3)
-        refine_time = n_candidate * 0.01 + 2
-        strategy_parts.append(f"N-grams (n={config.ngram_size})")
-    bidir_mult = 2.0 if config.bidirectional else 1.0
-    if config.bidirectional:
-        strategy_parts.append("Bidirectionnel")
-    total_time = max(1, int((sentence_time + search_time + refine_time) * bidir_mult))
-    total_mem = sentence_mem * bidir_mult
-    return total_time, round(total_mem, 1), " + ".join(strategy_parts)
-
 
 def go_to_tab(tab_index):
     st.session_state.active_tab = tab_index
     save_state()
 
 
-def generate_ranking_csv():
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['rang', 'document', 'score', 'mots', 'phrases', 'hash'])
-    for r in st.session_state.app_rankings:
-        writer.writerow([
-            r['rank'], r['doc'].name, f"{r['score']*100:.2f}%",
-            len(r['doc'].text.words), r['doc'].text.n_sentences,
-            r['doc'].document_hash[:12] if r['doc'].document_hash else "N/A"
-        ])
-    return output.getvalue()
-
-
-def generate_alignment_csv():
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['num', 'pos_source', 'pos_cible', 'texte_source', 'texte_cible', 'nb_suppressions', 'nb_insertions'])
-    for i, match in enumerate(st.session_state.app_alignments):
-        pos1, pos2 = match[0], match[1]
-        suppressions = match[2] if len(match) > 2 else []
-        insertions = match[3] if len(match) > 3 else []
-        t1 = st.session_state.app_source.text.origin_content[pos1[0]:pos1[1]]
-        t2 = st.session_state.app_target.text.origin_content[pos2[0]:pos2[1]]
-        writer.writerow([
-            i + 1, f"{pos1[0]}-{pos1[1]}", f"{pos2[0]}-{pos2[1]}",
-            t1[:200], t2[:200], len(suppressions), len(insertions)
-        ])
-    return output.getvalue()
 
 
 # =================================================================
@@ -1224,127 +1256,193 @@ def render_cooccurrence(alignments, source_text, target_text, stopwords, n_top=1
 
 def main():
     init_state()
-    
-    # === SIDEBAR ===
+
+    # Préchauffage du modèle dès l'ouverture — spinner uniquement au premier lancement
+    if not st.session_state.get("_model_ready"):
+        with st.spinner("⏳ Initialisation du modèle de langue… (premier lancement uniquement, ~2 min)"):
+            load_model()
+        st.session_state["_model_ready"] = True
+        st.rerun()
+
+    # === SIDEBAR INFORMATIONNELLE ===
+    import base64 as _b64
+    _logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
+    _sidebar_logo_img = ''
+    if os.path.exists(_logo_path):
+        with open(_logo_path, "rb") as _f:
+            _logo_b64 = _b64.b64encode(_f.read()).decode()
+        _sidebar_logo_img = f'<img src="data:image/gif;base64,{_logo_b64}" style="height:1.5rem;vertical-align:middle;margin-right:6px">'
+
     with st.sidebar:
-        import base64
-        logo_path = os.path.join(os.path.dirname(__file__), "logo2.gif")
-        logo_img = ''
-        if os.path.exists(logo_path):
-            with open(logo_path, "rb") as f:
-                logo_b64 = base64.b64encode(f.read()).decode()
-            logo_img = f'<img src="data:image/png;base64,{logo_b64}" style="height:2rem">'
-        
-        # Bouton caché (sera cliqué par le JS du logo)
-        if st.button("___versus_reset___", key="reset_btn"):
-            reset_all()
-            st.rerun()
-        
-        # Logo + titre cliquable via components.html (+ cache le bouton reset par JS)
+        # --- Logo cliquable (reset) ---
         components.html(f"""
         <div onclick="
             var btns = window.parent.document.querySelectorAll('button');
             for(var i=0;i<btns.length;i++){{
                 if(btns[i].innerText.indexOf('versus_reset')!==-1){{btns[i].click();break;}}
             }}
-        " style="display:flex;align-items:center;justify-content:center;gap:10px;padding:0.5rem 0;cursor:pointer;border-radius:8px;transition:background 0.2s;user-select:none"
-           onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='transparent'">
-            {logo_img}
-            <span style="font-size:1.8rem;font-weight:800;letter-spacing:0.05em;color:#111827;font-family:system-ui,sans-serif">versus CLAUDE</span>
+        " style="display:flex;align-items:center;padding:12px 12px 10px 12px;cursor:pointer;
+                 border-bottom:1px solid #e5e7eb;user-select:none;transition:background 0.15s"
+           onmouseover="this.style.background='#f8f9fb'" onmouseout="this.style.background='transparent'">
+            {_sidebar_logo_img}
+            <span style="font-size:1.7rem;font-weight:700;letter-spacing:0.08em;color:#111827;font-family:system-ui,sans-serif">VERSUS</span>
         </div>
-        <script>
-            // Cacher le bouton reset par son texte (fiable quelle que soit la version Streamlit)
-            var btns = window.parent.document.querySelectorAll('button');
-            for(var i=0;i<btns.length;i++){{
-                if(btns[i].innerText.indexOf('versus_reset')!==-1){{
-                    var el=btns[i].closest('[data-testid="stButton"]')||btns[i].parentElement;
-                    el.style.cssText='height:0;overflow:hidden;margin:0;padding:0;position:absolute';
-                    break;
-                }}
-            }}
-        </script>
-        """, height=55)
+        """, height=50)
 
-        # ── Vignettes paramètres ──
-        st.divider()
-        def _pill(label, color, bg):
-            return (f"<span style='background:{bg};color:{color};padding:2px 8px;"
-                    f"border-radius:12px;font-size:0.7rem;font-weight:600;"
-                    f"margin:2px 2px;display:inline-block'>{label}</span>")
-        cfg_b = st.session_state.app_config
-        sw_val = st.session_state.get('exclude_stopwords', False)
-        th_b = st.session_state.align_th
-        th_c = ("#065f46","#d1fae5") if th_b >= 0.85 else ("#92400e","#fef3c7") if th_b >= 0.70 else ("#991b1b","#fee2e2")
-        pills = ""
-        pills += _pill("−SW" if sw_val else "+SW", "#065f46" if sw_val else "#6b7280", "#d1fae5" if sw_val else "#f3f4f6")
-        pills += _pill(cfg_b.scoring_method.upper(), "#1e40af", "#dbeafe")
-        pills += _pill(f"seuil {th_b:.2f}", th_c[0], th_c[1])
-        st.markdown(f"<div style='line-height:2'>{pills}</div>", unsafe_allow_html=True)
+        # --- État ---
+        st.markdown("<div class='sidebar-section-title'>État</div>", unsafe_allow_html=True)
 
-        cfg = st.session_state.app_config
-
-        st.divider()
-
-        # --- Groupe 1 : Paramètres généraux ---
-        def _on_method_change():
-            new_val = st.session_state['sidebar_method']
-            if new_val != st.session_state.app_config.scoring_method:
-                st.session_state.app_config.scoring_method = new_val
-                st.session_state.app_config.profile_name = "custom"
-                st.session_state.app_corpus.corpus_weights = None
-                if st.session_state.app_rankings:
-                    st.session_state.ranking_pending = True
-
-        st.radio(
-            "Méthode de pondération", ["bm25", "tfidf"],
-            index=0 if cfg.scoring_method == "bm25" else 1,
-            horizontal=True, key="sidebar_method",
-            on_change=_on_method_change,
-            help="Utilisée pour calculer le poids des embeddings de chaque phrase.\n\n**BM25** : pondération probabiliste qui favorise les termes rares et pénalise les documents trop longs. Recommandé pour des corpus hétérogènes.\n\n**TF-IDF** : pondération classique basée sur la fréquence du terme dans le document et sa rareté dans le corpus. Plus simple, souvent suffisant pour des textes homogènes."
+        source = st.session_state.get("app_source")
+        source_html = (
+            f"<span class='sidebar-badge badge-green'>{source.name[:18]}</span>"
+            if source else "<span class='sidebar-badge badge-gray'>—</span>"
         )
-        if st.session_state.ranking_pending:
-            st.warning("⚠️ Relancez le classement pour appliquer.")
 
-        _show_w = bool(st.session_state.app_alignments)
-        _w = "⚠️ Relancez l'alignement pour appliquer."
+        _cible_display = st.session_state.get("_cible_display")
+        _target        = st.session_state.get("app_target")
 
-        # 1. Stopwords
-        new_exclude_sw = st.checkbox("Exclure les stopwords", st.session_state.exclude_stopwords,
-                                     key="cb_exclude_sw",
-                                     help="Les stopwords sont des mots grammaticaux très fréquents (articles, prépositions, conjonctions…) qui n'apportent pas de sens propre. Les exclure concentre la comparaison sur le vocabulaire significatif, ce qui améliore la précision pour des textes à contenu dense. À désactiver si la structure grammaticale elle-même est pertinente pour l'analyse.")
-        if new_exclude_sw != st.session_state.exclude_stopwords:
-            st.session_state.exclude_stopwords = new_exclude_sw
-            st.session_state.app_config.use_stopwords = new_exclude_sw
-            st.session_state.params_pending = True
-            st.session_state.pending_params.add("sw")
-            save_state()
-        if "sw" in st.session_state.pending_params and _show_w:
-            st.warning(_w)
+        if _cible_display:
+            _badge = "badge-green" if (_target and _target.name == _cible_display) else "badge-blue"
+            cible_html = f"<span class='sidebar-badge {_badge}'>{_cible_display[:18]}</span>"
+        else:
+            cible_docs_list = (
+                st.session_state.app_corpus_full.documents
+                if "app_corpus_full" in st.session_state else []
+            )
+            if cible_docs_list:
+                cible_names_str = ", ".join(d.name[:12] for d in cible_docs_list)
+                if len(cible_names_str) > 20:
+                    cible_names_str = cible_names_str[:19] + "…"
+                cible_html = f"<span class='sidebar-badge badge-blue'>{cible_names_str}</span>"
+            else:
+                cible_html = "<span class='sidebar-badge badge-gray'>—</span>"
 
-        st.divider()
+        st.markdown(f"""
+        <div class='sidebar-row'><span class='sidebar-key'>Source</span>{source_html}</div>
+        <div class='sidebar-row'><span class='sidebar-key'>Cible</span>{cible_html}</div>
+        """, unsafe_allow_html=True)
 
-        # 2. Seuil cosinus
-        st.markdown("Seuil cosinus", help="Score minimum de similarité cosinus qu'une paire de segments doit atteindre pour être retenue. C'est le paramètre qui a le plus d'impact sur le volume de résultats. La comparaison des embeddings est faite par cosinus (ou via FAISS si le texte cible dépasse 50 phrases).\n\nUn seuil élevé (> 0,85) ne garde que les correspondances très proches ; un seuil bas (< 0,70) détecte plus de rapprochements mais introduit davantage de faux positifs.")
-        new_th = st.slider(
-            "Seuil cosinus", 0.5, 1.0, st.session_state.align_th, 0.01,
-            key="slider_th",
-            label_visibility="collapsed"
+
+
+        # --- Paramètres globaux ---
+        st.markdown("<div style='margin-top:0.8rem'></div>", unsafe_allow_html=True)
+        st.markdown("<div class='sidebar-section-title'>Paramètres</div>", unsafe_allow_html=True)
+
+        seuil = st.session_state.get("align_th", 0.85)
+        sw = st.session_state.get("exclude_stopwords", False)
+        sw_html = (
+            "<span class='sidebar-badge badge-green'>oui</span>"
+            if sw else "<span class='sidebar-badge badge-gray'>non</span>"
         )
-        if abs(new_th - st.session_state.align_th) > 0.001:
-            st.session_state.align_th = new_th
-            st.session_state.app_config.profile_name = "custom"
-            st.session_state.params_pending = True
-            st.session_state.pending_params.add("th")
-            save_state()
-        if "th" in st.session_state.pending_params and _show_w:
-            st.warning(_w)
+        sort_mode = st.session_state.get("align_sort_mode", "Combinée (60/40)")
 
-        # Seuil adaptatif, affinage intermédiaire et agrégation bidirectionnelle
-        # sont hardcodés : adaptive=True, ngram_refinement=False, bidirectional=False
-        st.session_state.app_config.adaptive_threshold = True
-        st.session_state.app_config.ngram_refinement   = False
-        st.session_state.app_config.bidirectional      = False
-    
+        st.markdown(f"""
+        <div class='sidebar-row'><span class='sidebar-key'>Seuil similarité</span><span class='sidebar-val'>{seuil:.2f}</span></div>
+        <div class='sidebar-row'><span class='sidebar-key'>Stopwords exclus</span>{sw_html}</div>
+        <div class='sidebar-row'><span class='sidebar-key'>Mode de tri</span><span class='sidebar-val'>{sort_mode}</span></div>
+        """, unsafe_allow_html=True)
+
+        # --- Résultats (si alignements disponibles) ---
+        alignments = st.session_state.get("app_alignments", [])
+        rankings   = st.session_state.get("app_rankings", [])
+        target     = st.session_state.get("app_target")
+        if alignments and target:
+            st.markdown("<div style='margin-top:0.8rem'></div>", unsafe_allow_html=True)
+            st.markdown("<div class='sidebar-section-title'>Résultats</div>", unsafe_allow_html=True)
+
+            target_score = None
+            for r in rankings:
+                if r["doc"].name == target.name:
+                    target_score = r["score"]
+                    break
+            score_html = (
+                f"<span class='sidebar-val'>{target_score*100:.1f} %</span>"
+                if target_score is not None else "<span class='sidebar-badge badge-gray'>—</span>"
+            )
+
+            n_align_res = len(alignments)
+            align_res_html = f"<span class='sidebar-badge badge-blue'>{n_align_res}</span>"
+
+            n_identical = sum(
+                1 for a in alignments
+                if len(a) > 3
+                and isinstance(a[2], list) and isinstance(a[3], list)
+                and len(a[2]) == 0 and len(a[3]) == 0
+            )
+            identical_html = f"<span class='sidebar-badge badge-blue'>{n_identical}</span>"
+
+            st.markdown(f"""
+            <div class='sidebar-row'><span class='sidebar-key'>Similarité globale</span>{score_html}</div>
+            <div class='sidebar-row'><span class='sidebar-key'>Alignements</span>{align_res_html}</div>
+            <div class='sidebar-row'><span class='sidebar-key'>Segments identiques</span>{identical_html}</div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("""
+            <style>
+            [data-testid="stSidebar"] > div:first-child {
+                padding-bottom: 3rem;
+            }
+            .sidebar-credit {
+                position: fixed;
+                bottom: 1rem;
+                font-size: 0.68rem;
+                color: #b0b7c3;
+                line-height: 1.5;
+                padding: 0 0.5rem;
+            }
+            </style>
+            <div class="sidebar-credit">
+                Développé par Motasem Alrahabi<br>
+                ObTIC, Sorbonne Université (2026)
+            </div>
+        """, unsafe_allow_html=True)
+    if st.button("___versus_reset___", key="reset_btn"):
+        reset_all()
+        st.rerun()
+    # Masquer le bouton reset via JS (dans iframe)
+    components.html("""
+    <script>
+    setTimeout(function(){
+        var doc = window.parent.document;
+        doc.querySelectorAll('button').forEach(function(b){
+            if(b.innerText.indexOf('versus_reset') !== -1){
+                var el = b.closest('[data-testid="stButton"]') || b.parentElement;
+                el.style.cssText = 'height:0;overflow:hidden;margin:0;padding:0;position:absolute';
+            }
+        });
+    }, 200);
+    </script>
+    """, height=1)
+
+    # FAB haut/bas — injecté via st.markdown directement dans le DOM Streamlit
+    # (pas d'iframe : position:fixed fonctionne sur la vraie page)
+    st.markdown("""
+    <style>
+    #vs-top-anchor { position: absolute; top: 0; left: 0; }
+    .vs-fab-nav {
+        position: fixed; right: 18px; bottom: 24px; z-index: 9999;
+        display: flex; flex-direction: column; gap: 3px;
+    }
+    .vs-fab-nav a {
+        display: flex; align-items: center; justify-content: center;
+        width: 30px; height: 30px; border-radius: 50%;
+        background: #ffffff; border: 1px solid #e5e7eb;
+        color: #9ca3af; font-size: 14px; text-decoration: none;
+        box-shadow: 0 1px 4px rgba(0,0,0,.10);
+        transition: color .15s, border-color .15s;
+    }
+    .vs-fab-nav a:hover { color: #374151; border-color: #9ca3af; }
+    </style>
+    <div id="vs-top-anchor"></div>
+    <div class="vs-fab-nav">
+      <a href="#vs-top-anchor" title="Aller en haut">↑</a>
+      <a href="#vs-page-bottom" title="Aller en bas">↓</a>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.session_state.app_config.adaptive_threshold = True
+
+
     # === NAVIGATION ===
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
@@ -1384,7 +1482,8 @@ def main():
             if src_file:
                 # Ne recréer que si c'est un nouveau fichier
                 if st.session_state.app_source is None or st.session_state.app_source.name != src_file.name:
-                    content = read_file(src_file)
+                    with st.spinner(f"Chargement de {src_file.name}…"):
+                        content = read_file(src_file)
                     if content:
                         st.session_state.app_source = Document(name=src_file.name, content=content)
                         save_state()
@@ -1410,7 +1509,12 @@ def main():
             )
             if corpus_files:
                 added = 0
-                for f in corpus_files:
+                total_files = len(corpus_files)
+                _progress_bar = st.progress(0, text="Chargement des fichiers…") if total_files > 1 else None
+                for _fi, f in enumerate(corpus_files):
+                    if _progress_bar:
+                        _pct = int(_fi / total_files * 100)
+                        _progress_bar.progress(_pct, text=f"Chargement : {f.name} ({_fi + 1}/{total_files})")
                     existing_full = st.session_state.app_corpus_full.get_documents_names()
                     file_content = read_file(f)
                     if not file_content:
@@ -1432,6 +1536,8 @@ def main():
                             st.session_state.app_rankings = []
                             st.session_state.need_realign = True
                             added += 1
+                if _progress_bar:
+                    _progress_bar.empty()
                 if added > 0:
                     # Re-appliquer le filtre actif s'il y en a un
                     if st.session_state.corpus_filter_kw:
@@ -1468,56 +1574,15 @@ def main():
                                 st.session_state.app_target = None
                                 st.session_state.app_alignments = []
                             st.rerun()
-        
-        # Filtre mots-clés
-        st.divider()
-        active_filter = st.session_state.corpus_filter_kw
-        st.markdown('<div class="panel-title">🔎 FILTRER LE CORPUS CIBLE PAR MOTS-CLÉS</div>', unsafe_allow_html=True)
-        c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-        with c1:
-            kw = st.text_input("Mot-clé", label_visibility="collapsed", placeholder="Ex: philosophie")
-        with c2:
-            case = st.checkbox("Ignorer casse", True)
-        with c3:
-            if st.button("Filtrer", use_container_width=True) and kw:
-                st.session_state.corpus_filter_kw = kw
-                st.session_state.app_corpus = st.session_state.app_corpus_full.filter(kw, ignore_case=case)
-                st.rerun()
-        with c4:
-            if st.button("↺ Reset", use_container_width=True, disabled=not active_filter):
-                st.session_state.corpus_filter_kw = ""
-                st.session_state.app_corpus = st.session_state.app_corpus_full
-                st.rerun()
 
-        # Résultats du filtre (Option B)
-        if active_filter:
-            filtered_docs = st.session_state.app_corpus.documents
-            total_docs = len(st.session_state.app_corpus_full)
-            n_found = len(filtered_docs)
-            if n_found == 0:
-                st.warning(f"Aucun document cible ne contient « {active_filter} ».")
-            else:
-                st.markdown(
-                    f"<div style='font-size:0.78rem;color:#6b7280;margin:0.4rem 0 0.6rem 0'>"
-                    f"<b style='color:#2563eb'>{n_found}</b> document(s) retenu(s) sur "
-                    f"<b>{total_docs}</b> — filtre : <b>« {active_filter} »</b></div>",
-                    unsafe_allow_html=True
-                )
-                for doc in filtered_docs:
-                    matches = st.session_state.app_corpus.keyword_matches.get(doc.name, 0)
-                    st.markdown(
-                        f"<div style='padding:0.35rem 0.75rem;margin:0.2rem 0;"
-                        f"background:#f0f7ff;border-left:3px solid #2563eb;"
-                        f"border-radius:4px;font-size:0.8rem;'>"
-                        f"📄 <b>{doc.name}</b> "
-                        f"<span style='color:#6b7280'>({len(doc.text.words)} mots)</span> "
-                        f"<span style='color:#2563eb;font-weight:600;margin-left:0.5rem'>"
-                        f"{matches} occurrence(s)</span></div>",
-                        unsafe_allow_html=True
-                    )
-
-        can_classify = st.session_state.app_source is not None and len(st.session_state.app_corpus) > 0
+        can_classify = (st.session_state.app_source is not None
+                        and len(st.session_state.app_corpus_full) > 0)
         if st.button("Valider →", use_container_width=True, disabled=not can_classify, type="primary"):
+            # Réinitialiser le filtre mots-clés à chaque retour sur page 2
+            st.session_state.corpus_filter_kw = ""
+            st.session_state.app_corpus = st.session_state.app_corpus_full
+            st.session_state.app_rankings = []
+            st.session_state["_cible_display"] = None
             st.session_state.active_tab = 1
             st.rerun()
     
@@ -1530,68 +1595,138 @@ def main():
         else:
             already_ranked = bool(st.session_state.app_rankings)
 
-            if st.button("Classer les textes cibles par similarité →", use_container_width=True,
-                         type="secondary" if already_ranked else "primary"):
-                with st.spinner("Classement en cours..."):
-                    temp = st.session_state.app_corpus.copy()
-                    idx = temp.index(st.session_state.app_source)
-                    if idx == -1:
-                        temp.add_doc(st.session_state.app_source)
-                        idx = len(temp) - 1
-                    if st.session_state.app_config.use_stopwords:
-                        for doc in temp.documents:
-                            doc.text.remove_stopwords()
-                    result = temp.compare(idx, model=load_model(), inplace=False)
+            # ── Choix du mode de classement ──────────────────────────────────
+            st.markdown('<div class="panel-title">MODE DE CLASSEMENT</div>', unsafe_allow_html=True)
+            classify_mode = st.radio(
+                "Mode",
+                ["Par similarité", "Par mots-clés"],
+                horizontal=True,
+                label_visibility="collapsed",
+                key="classify_mode_radio"
+            )
+
+            # Stopwords — toujours visible, grisé en mode mots-clés
+            sw_kw_mode = (classify_mode == "Par mots-clés")
+            sw_help = ("Les stopwords sont des mots grammaticaux très fréquents "
+                       "(articles, prépositions, conjonctions…) qui n'apportent pas de sens propre. "
+                       "Les exclure concentre la comparaison sur le vocabulaire significatif, ce qui "
+                       "améliore la précision pour des textes à contenu dense. À désactiver si la "
+                       "structure grammaticale elle-même est pertinente pour l'analyse.")
+            if sw_kw_mode:
+                sw_help += " (non applicable avec le classement par mots-clés)"
+            new_exclude_sw = st.checkbox("Exclure les stopwords",
+                                         st.session_state.exclude_stopwords,
+                                         key="cb_exclude_sw",
+                                         disabled=sw_kw_mode,
+                                         help=sw_help)
+            if new_exclude_sw != st.session_state.exclude_stopwords:
+                st.session_state.exclude_stopwords = new_exclude_sw
+                st.session_state.app_config.use_stopwords = new_exclude_sw
+                save_state()
+
+            if classify_mode == "Par similarité":
+                # Arrêter le filtre mots-clés si on revient en mode similarité
+                if st.session_state.get("corpus_filter_kw"):
+                    st.session_state.corpus_filter_kw = ""
+                    st.session_state.app_corpus = st.session_state.app_corpus_full
                     st.session_state.app_rankings = []
-                    st.session_state.ranking_pending = False
-                    st.session_state.params_pending = False
-                    for i, doc in enumerate(result.documents):
-                        if doc.name != st.session_state.app_source.name:
-                            st.session_state.app_rankings.append({
-                                'doc': doc,
-                                'score': result.similarities[i],
-                                'rank': len(st.session_state.app_rankings) + 1
-                            })
-                st.rerun()
+
+                if st.button("Classer les textes par similarité →", use_container_width=True,
+                             type="secondary" if already_ranked else "primary"):
+                    with st.spinner("Classement en cours…"):
+                        temp = st.session_state.app_corpus.copy()
+                        idx = temp.index(st.session_state.app_source)
+                        if idx == -1:
+                            temp.add_doc(st.session_state.app_source)
+                            idx = len(temp) - 1
+                        if st.session_state.app_config.use_stopwords:
+                            for doc in temp.documents:
+                                doc.text.remove_stopwords()
+                        result = temp.compare(idx, model=CachedEncoderModel(load_model()), inplace=False)
+                        st.session_state.app_rankings = []
+                        st.session_state.ranking_pending = False
+                        st.session_state.params_pending = False
+                        for i, doc in enumerate(result.documents):
+                            if doc.name != st.session_state.app_source.name:
+                                st.session_state.app_rankings.append({
+                                    'doc': doc,
+                                    'score': result.similarities[i],
+                                    'rank': len(st.session_state.app_rankings) + 1
+                                })
+                        if st.session_state.app_rankings:
+                            st.session_state["_cible_display"] = st.session_state.app_rankings[0]['doc'].name
+                    st.rerun()
+
+            else:  # Par mots-clés
+                active_kw_filter = st.session_state.get("corpus_filter_kw", "")
+                kw_c1, kw_c2, kw_c3 = st.columns([3, 1, 1])
+                with kw_c1:
+                    st.text_input("Mot-clé", label_visibility="collapsed",
+                                  placeholder="Ex: philosophie", key="kw_filter_input")
+                with kw_c2:
+                    kw_case = st.checkbox("Ignorer la casse", True, key="kw_case_checkbox")
+                with kw_c3:
+                    kw_val = st.session_state.get("kw_filter_input", "").strip()
+                    if st.button("Filtrer", use_container_width=True,
+                                 type="primary") and kw_val:
+                        with st.spinner(f"Filtrage par « {kw_val} »…"):
+                            st.session_state.corpus_filter_kw = kw_val
+                            st.session_state.app_corpus = st.session_state.app_corpus_full.filter(
+                                kw_val, ignore_case=kw_case)
+                        kw_matches = st.session_state.app_corpus.keyword_matches
+                        st.session_state.app_rankings = []
+                        st.session_state.ranking_pending = False
+                        st.session_state.params_pending = False
+                        for doc in st.session_state.app_corpus.documents:
+                            if doc.name != st.session_state.app_source.name:
+                                st.session_state.app_rankings.append({
+                                    'doc': doc,
+                                    'score': kw_matches.get(doc.name, 0),
+                                    'rank': len(st.session_state.app_rankings) + 1
+                                })
+                        if st.session_state.app_rankings:
+                            st.session_state["_cible_display"] = st.session_state.app_rankings[0]['doc'].name
+                        st.rerun()
+
+                if active_kw_filter:
+                    n_found = len(st.session_state.app_corpus.documents)
+                    total_docs = len(st.session_state.app_corpus_full)
+                    if n_found == 0:
+                        st.warning(f"Aucun document cible ne contient « {active_kw_filter} ».")
+                    else:
+                        st.markdown(
+                            f"<div style='font-size:0.78rem;color:#6b7280;margin:0.4rem 0 0.2rem 0'>"
+                            f"<b style='color:#2563eb'>{n_found}</b> document(s) retenu(s) sur "
+                            f"<b>{total_docs}</b> — filtre : <b>« {active_kw_filter} »</b></div>",
+                            unsafe_allow_html=True
+                        )
             
             if st.session_state.app_rankings:
-                c1, c2, c3, c4 = st.columns(4)
-                with c1:
-                    st.markdown(f'<div class="stat-box"><div class="stat-value">{len(st.session_state.app_rankings)}</div><div class="stat-label">Documents</div></div>', unsafe_allow_html=True)
-                with c2:
-                    avg = sum(r['score'] for r in st.session_state.app_rankings) / len(st.session_state.app_rankings)
-                    st.markdown(f'<div class="stat-box"><div class="stat-value">{avg*100:.1f}%</div><div class="stat-label">Score moyen</div></div>', unsafe_allow_html=True)
-                with c3:
-                    top = st.session_state.app_rankings[0]['score']
-                    st.markdown(f'<div class="stat-box"><div class="stat-value">{top*100:.1f}%</div><div class="stat-label">Score max</div></div>', unsafe_allow_html=True)
-                with c4:
-                    st.markdown(f'<div class="stat-box"><div class="stat-value">{st.session_state.app_config.scoring_method.upper()}</div><div class="stat-label">Pondération</div></div>', unsafe_allow_html=True)
-                
-                st.divider()
-                
-                for r in st.session_state.app_rankings:
-                    c1, c2, c3 = st.columns([1, 5, 2])
-                    with c1:
-                        color = "#d97706" if r['rank'] <= 3 else "#9ca3af"
-                        st.markdown(f"<h2 style='color:{color};text-align:center;margin:0'>#{r['rank']}</h2>", unsafe_allow_html=True)
-                    with c2:
-                        st.markdown(f"**{r['doc'].name}**")
-                        st.caption(f"{len(r['doc'].text.words)} mots · {r['doc'].text.n_sentences} phrases")
-                    with c3:
-                        st.markdown(f"<h3 style='color:#2563eb;margin:0'>{r['score']*100:.1f}%</h3>", unsafe_allow_html=True)
-                        st.progress(r['score'])
-                    st.markdown("---")
-                
                 doc_names = [r['doc'].name for r in st.session_state.app_rankings]
                 
                 source_name = st.session_state.app_source.name
                 st.markdown(f'Sélectionner un document à comparer avec : **"{source_name}"**')
-                selected_doc = st.selectbox("", doc_names, key="select_align_doc", label_visibility="collapsed")
-                
+                selected_doc = st.selectbox("", doc_names, key="select_align_doc",
+                                            label_visibility="collapsed")
+                # Toujours synchroniser _cible_display avec le choix courant du selectbox
+                st.session_state["_cible_display"] = selected_doc
+
+                # Paramètre seuil cosinus (déplacé depuis la sidebar)
+                st.markdown("Seuil cosinus", help="Score minimum de similarité cosinus qu'une paire de segments doit atteindre pour être retenue. C'est le paramètre qui a le plus d'impact sur le volume de résultats. La comparaison des embeddings est faite par cosinus (ou via FAISS si le texte cible dépasse 50 phrases).\n\nUn seuil élevé (> 0,85) ne garde que les correspondances très proches ; un seuil bas (< 0,70) détecte plus de rapprochements mais introduit davantage de faux positifs.")
+                new_th = st.slider(
+                    "Seuil cosinus", 0.5, 1.0, st.session_state.align_th, 0.01,
+                    key="slider_th",
+                    label_visibility="collapsed"
+                )
+                if abs(new_th - st.session_state.align_th) > 0.001:
+                    st.session_state.align_th = new_th
+                    save_state()
+
                 if st.button("Aligner les textes →", use_container_width=True, type="primary"):
                     for r in st.session_state.app_rankings:
                         if r['doc'].name == selected_doc:
                             st.session_state.app_target = r['doc']
+                            st.session_state["_cible_display"] = r['doc'].name
                             break
                     st.session_state.app_alignments = []
                     st.session_state.need_realign = True
@@ -1607,7 +1742,6 @@ def main():
         else:
             cfg = st.session_state.app_config
             
-            n = st.session_state.align_n
             th = st.session_state.align_th
             
             # Si params_pending, attendre que l'utilisateur relance manuellement
@@ -1624,12 +1758,11 @@ def main():
                 start_time = time.time()
                 
                 progress_bar.progress(10, text="Chargement du modèle...")
-                model = load_model()
+                model = CachedEncoderModel(load_model())
                 
                 progress_bar.progress(20, text="Configuration...")
                 run_cfg = ComparisonConfig(**st.session_state.app_config.to_dict())
                 run_cfg.similarity_threshold = th
-                run_cfg.ngram_size = n
                 
                 progress_bar.progress(30, text="Segmentation en phrases...")
                 
@@ -1644,16 +1777,17 @@ def main():
                 
                 comp = PairText(text1, text2, config=run_cfg)
                 
-                progress_text = "Alignement par phrases"
-                if run_cfg.ngram_refinement:
-                    progress_text += f" + affinage n-grams (n={n})"
-                if run_cfg.bidirectional:
-                    progress_text += " + bidirectionnel"
-                progress_bar.progress(50, text=progress_text + "...")
+                progress_bar.progress(50, text="Alignement par phrases...")
                 
                 st.session_state.app_alignments = comp.compare_n_grams(
-                    n=n, model=model, score_threshold=th
+                    model=model, score_threshold=th
                 )
+                
+                progress_bar.progress(80, text="Calcul suppressions/insertions...")
+                st.session_state.app_alignments = comp.compute_diffs(
+                    st.session_state.app_alignments
+                )
+                
                 st.session_state.app_comparateur = comp
                 st.session_state.params_pending = False
                 st.session_state.pending_params = set()
@@ -1662,8 +1796,8 @@ def main():
                 progress_bar.progress(100, text=f"✓ Terminé en {elapsed:.1f}s")
                 time.sleep(0.3)
                 progress_bar.empty()
-                st.rerun()
-            
+
+
             # Résultats
             if st.session_state.app_alignments:
 
@@ -1699,7 +1833,7 @@ def main():
                     )
 
                     # ── Pagination ──
-                    BLOCKS_PER_PAGE = 50
+                    BLOCKS_PER_PAGE = 30
                     all_matches = sorted_alignments
                     total_blocks = len(all_matches)
                     total_pages = max(1, (total_blocks + BLOCKS_PER_PAGE - 1) // BLOCKS_PER_PAGE)
@@ -1715,47 +1849,41 @@ def main():
                     end_idx = min(start_idx + BLOCKS_PER_PAGE, total_blocks)
                     page_matches_raw = all_matches[start_idx:end_idx]
                     
-                    # Calcul du diff uniquement pour les blocs de cette page
-                    page_matches = st.session_state.app_comparateur.compute_diffs(page_matches_raw)
-                    
                     html = make_html(
-                        page_matches,
+                        page_matches_raw,
                         st.session_state.app_comparateur,
                         stopwords,
                         start_offset=start_idx,
                         total_alignments=total_blocks,
-                        raw_scores=getattr(st.session_state.app_comparateur, '_raw_scores', {})
+                        raw_scores=getattr(st.session_state.app_comparateur, '_raw_scores', {}),
+                        all_matches=sorted_alignments
                     )
                     components.html(html, height=1650, scrolling=True)
                     
                     # Navigation si plus d'une page
                     if total_pages > 1:
-                        _, nav_col, _ = st.columns([1, 4, 1])
-                        with nav_col:
-                            c1, c2, c3, c4, c5 = st.columns([1, 1, 2, 1, 1])
-                            with c1:
-                                if st.button("⟨⟨ Début", disabled=(page == 0), key="pg_first", use_container_width=True):
-                                    st.session_state.align_page = 0
-                                    st.rerun()
-                            with c2:
-                                if st.button("⟨ Préc.", disabled=(page == 0), key="pg_prev", use_container_width=True):
-                                    st.session_state.align_page -= 1
-                                    st.rerun()
-                            with c3:
-                                st.markdown(
-                                    f"<div style='text-align:center;padding:0.5rem;font-weight:600;color:#374151'>"
-                                    f"Page {page+1} / {total_pages} — Blocs {start_idx+1}-{end_idx} sur {total_blocks}"
-                                    f"</div>",
-                                    unsafe_allow_html=True
-                                )
-                            with c4:
-                                if st.button("Suiv. ⟩", disabled=(page >= total_pages - 1), key="pg_next", use_container_width=True):
-                                    st.session_state.align_page += 1
-                                    st.rerun()
-                            with c5:
-                                if st.button("Fin ⟩⟩", disabled=(page >= total_pages - 1), key="pg_last", use_container_width=True):
-                                    st.session_state.align_page = total_pages - 1
-                                    st.rerun()
+                        _c1, _c2, _c3 = st.columns([1, 3, 1])
+                        with _c1:
+                            if st.button("«‹ Préc.", disabled=(page == 0), key="pg_prev", use_container_width=True):
+                                st.session_state.align_page -= 1; st.rerun()
+                        with _c2:
+                            st.markdown(
+                                f"<div style='text-align:center;font-size:.75rem;color:#6b7280;"
+                                f"border:1px solid #e5e7eb;border-radius:6px;padding:0 14px;height:38px;"
+                                f"display:flex;align-items:center;justify-content:center;gap:5px'>"
+                                f"<b style='color:#111827'>{page+1}</b>"
+                                f"<span style='color:#d1d5db'>/</span><span>{total_pages}</span>"
+                                f"<span style='color:#e5e7eb;margin:0 4px'>·</span>"
+                                f"<span>blocs {start_idx+1}–{end_idx}"
+                                f"<span style='color:#9ca3af'> / {total_blocks}</span></span></div>",
+                                unsafe_allow_html=True
+                            )
+                        with _c3:
+                            if st.button("Suiv. ›»", disabled=(page >= total_pages - 1), key="pg_next", use_container_width=True):
+                                st.session_state.align_page += 1; st.rerun()
+
+                    # Ancre bas de page (cible du bouton ↓)
+                    st.markdown('<div id="vs-page-bottom"></div>', unsafe_allow_html=True)
                 
 
             else:
@@ -1784,6 +1912,7 @@ def main():
                     st.session_state.app_target.name
                 )
                 components.html(heatmap_html, height=480)
+                st.caption("Chaque point représente un passage aligné : sa position horizontale indique où il se situe dans le texte source, sa position verticale dans le texte cible. La couleur varie du jaune (score faible) au vert (score élevé). Une diagonale bien marquée révèle un emprunt linéaire ; des points dispersés signalent des réorganisations structurelles.")
             with viz_c2:
                 radar_html = render_radar(
                     stats1, stats2,
@@ -1792,6 +1921,7 @@ def main():
                     Global_stuff.STOPWORDS
                 )
                 components.html(radar_html, height=480)
+                st.caption("Comparaison des profils stylistiques sur six dimensions : diversité lexicale, longueur moyenne des phrases, densité lexicale (proportion de mots porteurs de sens), hapax (mots n’apparaissant qu’une fois), nombre de mots uniques et nombre de phrases. Plus le polygone d’un texte est étendu sur un axe, plus il surpasse l’autre sur cette dimension.")
 
             sankey_html = render_sankey(
                 st.session_state.app_alignments,
@@ -1801,6 +1931,7 @@ def main():
                 st.session_state.app_target.name
             )
             components.html(sankey_html, height=400)
+            st.caption("Les deux textes sont découpés en segments de taille égale (colonnes gauche et droite). Chaque ruban relie un segment source au segment cible avec lequel il présente le plus d’alignements ; la largeur du ruban est proportionnelle au nombre de correspondances détectées. Ce graphique révèle d’éventuelles réorganisations de blocs entre les deux textes.")
 
             # ── Timeline parallèle ──
             timeline_html = render_timeline(
@@ -1811,12 +1942,14 @@ def main():
                 st.session_state.app_target.name
             )
             components.html(timeline_html, height=240)
+            st.caption("Les barres représentent la longueur de chaque texte (de gauche à droite = du début à la fin). Les portions colorées indiquent les passages couverts par au moins un alignement ; les traits bleus pâles relient les passages correspondants entre les deux textes. Le pourcentage de couverture affiché mesure la proportion du texte effectivement prise dans des alignements.")
 
             # ── Histogramme + Densité côte à côte ──
             viz_c3, viz_c4 = st.columns(2)
             with viz_c3:
                 hist_html = render_score_histogram(st.session_state.app_alignments)
                 components.html(hist_html, height=310)
+                st.caption("Répartition des scores de similarité combinés par intervalles de 0,05. Un pic vers la droite indique une majorité d’alignements de haute qualité ; une distribution étalée suggère des correspondances de niveaux variés. La ligne rouge en pointillés marque le score moyen.")
             with viz_c4:
                 density_html = render_density(
                     st.session_state.app_alignments,
@@ -1826,6 +1959,7 @@ def main():
                     st.session_state.app_target.name
                 )
                 components.html(density_html, height=310)
+                st.caption("Densité des alignements selon leur position dans chaque texte : chaque texte est découpé en tranches et la courbe indique combien d’alignements tombent dans chaque tranche. Les pics révèlent les zones de forte concentration d’emprunts ; les creux signalent des passages peu ou pas repris.")
 
             # ── Nuage de mots différentiel ──
             wordcloud_html = render_wordcloud(
@@ -1835,6 +1969,7 @@ def main():
                 Global_stuff.STOPWORDS
             )
             components.html(wordcloud_html, height=300)
+            st.caption("Vocabulaire exclusif à chaque texte (mots absents de l’autre, hors stopwords). La taille de chaque mot est proportionnelle à sa fréquence. Ce graphique met en évidence les champs lexicaux propres à chaque document et les termes que l’un a ajoutés ou supprimés par rapport à l’autre.")
 
             # ── Matrice de co-occurrence ──
             cooc_html = render_cooccurrence(
@@ -1844,6 +1979,7 @@ def main():
                 Global_stuff.STOPWORDS
             )
             components.html(cooc_html, height=520)
+            st.caption("Réseau des mots qui apparaissent fréquemment dans les mêmes passages alignés. Chaque nœud représente un terme (hors stopwords) ; chaque lien indique que les deux mots co-occurrent dans au moins un alignement commun. L’épaisseur du lien est proportionnelle à la force de cette co-occurrence. Ce graphique révèle les thèmes et les associations lexicales partagés entre les deux textes.")
 
             # ── Statistiques ──
             st.divider()
@@ -1856,269 +1992,14 @@ def main():
 
     # ===================== PAGE 5) GUIDE =====================
     elif st.session_state.active_tab == 3:
-        st.markdown("""
-        <style>
-            .guide-section {
-                background: #fff;
-                border: 1px solid #e5e7eb;
-                border-radius: 10px;
-                padding: 1.25rem 1.5rem;
-                margin-bottom: 1rem;
-            }
-            .guide-section h3 { color: #2563eb !important; font-size: 1rem; margin-bottom: 0.5rem; }
-            .guide-section p, .guide-section li { font-size: 0.9rem; line-height: 1.6; color: #374151 !important; }
-            .guide-badge {
-                display: inline-block; padding: 2px 8px; border-radius: 4px;
-                font-size: 0.75rem; font-weight: 600; color: #fff;
-                margin-right: 4px; vertical-align: middle;
-            }
-        </style>
-        """, unsafe_allow_html=True)
-
-        st.markdown("## 📖 Guide d'utilisation")
-        st.caption("versus CLAUDE — Outil de comparaison textuelle par similarité sémantique et lexicale")
-
-        # ── Diagramme pipeline ──
-        pipeline_html = """<!DOCTYPE html><html><head><meta charset="UTF-8">
-<style>
-  body { margin: 0; padding: 0; background: transparent; font-family: system-ui, sans-serif; }
-  svg text { font-family: system-ui, sans-serif; }
-</style>
-</head><body>
-<svg viewBox="0 0 900 760" width="100%" height="1000" xmlns="http://www.w3.org/2000/svg">
-
-  <defs>
-    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-      <path d="M0,0 L0,6 L8,3 z" fill="#94a3b8"/>
-    </marker>
-    <marker id="arb" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-      <path d="M0,0 L0,6 L8,3 z" fill="#0284c7"/>
-    </marker>
-  </defs>
-
-  <!-- Background -->
-  <rect width="900" height="760" fill="#f8fafc" rx="12"/>
-
-  <!-- Title -->
-  <text x="20" y="30" text-anchor="start" font-size="14" font-weight="700" fill="#374151">Pipeline versus CLAUDE — flux de traitement</text>
-
-  <!-- ══════ COLONNE GAUCHE : PIPELINE ══════ -->
-
-  <!-- ROW 1 : CHARGEMENT -->
-  <rect x="30" y="50" width="155" height="68" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="107" y="74" text-anchor="middle" font-size="11" font-weight="700" fill="#1d4ed8">📄 Texte source</text>
-  <text x="107" y="91" text-anchor="middle" font-size="10" fill="#3b82f6">.txt / .docx / .pdf</text>
-  <text x="107" y="107" text-anchor="middle" font-size="10" fill="#6b7280">segmentation en phrases</text>
-
-  <rect x="205" y="50" width="155" height="68" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="282" y="74" text-anchor="middle" font-size="11" font-weight="700" fill="#1d4ed8">📚 Corpus cible</text>
-  <text x="282" y="91" text-anchor="middle" font-size="10" fill="#3b82f6">N documents</text>
-  <text x="282" y="107" text-anchor="middle" font-size="10" fill="#6b7280">segmentation en phrases</text>
-
-  <line x1="107" y1="118" x2="107" y2="152" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
-  <line x1="282" y1="118" x2="282" y2="152" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
-
-  <!-- ROW 2 : FILTRE + PONDÉRATION -->
-  <rect x="30" y="152" width="155" height="56" rx="8" fill="#f0fdf4" stroke="#10b981" stroke-width="1.5"/>
-  <text x="107" y="175" text-anchor="middle" font-size="11" font-weight="700" fill="#059669">🔎 Filtre mots-clés</text>
-  <text x="107" y="192" text-anchor="middle" font-size="10" fill="#6b7280">optionnel — regex</text>
-  <text x="107" y="204" text-anchor="middle" font-size="9" fill="#10b981">corpus filtré → classement</text>
-
-  <rect x="205" y="152" width="155" height="56" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
-  <text x="282" y="175" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">⚙️ Pondération</text>
-  <text x="282" y="192" text-anchor="middle" font-size="10" fill="#6b7280">BM25 / TF-IDF</text>
-  <text x="282" y="204" text-anchor="middle" font-size="9" fill="#ca8a04">poids par phrase</text>
-
-  <line x1="107" y1="208" x2="107" y2="242" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
-  <line x1="282" y1="208" x2="282" y2="242" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
-
-  <!-- ROW 3 : CLASSEMENT -->
-  <rect x="30" y="242" width="330" height="62" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
-  <text x="195" y="266" text-anchor="middle" font-size="11" font-weight="700" fill="#5b21b6">🏆 Classement par similarité globale</text>
-  <text x="195" y="283" text-anchor="middle" font-size="10" fill="#6b7280">Embeddings all-MiniLM-L6-v2 · cosinus · tri décroissant</text>
-  <text x="195" y="298" text-anchor="middle" font-size="9.5" fill="#7c3aed">→ sélection du document cible pour alignement fin</text>
-
-  <line x1="195" y1="304" x2="195" y2="338" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
-
-  <!-- ROW 4 : ALIGNEMENT FIN -->
-  <rect x="30" y="338" width="155" height="62" rx="8" fill="#fce7f3" stroke="#db2777" stroke-width="1.5"/>
-  <text x="107" y="360" text-anchor="middle" font-size="11" font-weight="700" fill="#9d174d">Passe 1</text>
-  <text x="107" y="376" text-anchor="middle" font-size="10" font-weight="600" fill="#9d174d">Embeddings</text>
-  <text x="107" y="392" text-anchor="middle" font-size="10" fill="#6b7280">cosinus · phrase × phrase</text>
-
-  <rect x="205" y="338" width="155" height="62" rx="8" fill="#fce7f3" stroke="#db2777" stroke-width="1.5"/>
-  <text x="282" y="360" text-anchor="middle" font-size="11" font-weight="700" fill="#9d174d">Passe 2</text>
-  <text x="282" y="376" text-anchor="middle" font-size="10" font-weight="600" fill="#9d174d">N-grams (optionnel)</text>
-  <text x="282" y="392" text-anchor="middle" font-size="10" fill="#6b7280">TF-IDF · zone [0.60–0.85]</text>
-
-  <line x1="107" y1="400" x2="107" y2="432" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
-  <line x1="282" y1="400" x2="282" y2="432" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
-
-  <!-- ROW 5 : DIFF -->
-  <rect x="30" y="432" width="330" height="56" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
-  <text x="195" y="455" text-anchor="middle" font-size="11" font-weight="700" fill="#c2410c">Passe 3 — SequenceMatcher (diff)</text>
-  <text x="195" y="471" text-anchor="middle" font-size="10" fill="#6b7280">suppressions · insertions · mots communs</text>
-  <text x="195" y="483" text-anchor="middle" font-size="9" fill="#ea580c">affiché à la demande par bloc</text>
-
-  <line x1="195" y1="488" x2="195" y2="518" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
-
-  <!-- ROW 6 : RÉSULTATS -->
-  <rect x="30" y="518" width="155" height="34" rx="6" fill="#f1f5f9" stroke="#64748b" stroke-width="1.2"/>
-  <text x="107" y="533" text-anchor="middle" font-size="10" font-weight="600" fill="#374151">📋 Blocs paginés</text>
-  <text x="107" y="547" text-anchor="middle" font-size="9" fill="#6b7280">50 blocs / page</text>
-
-  <rect x="205" y="518" width="155" height="34" rx="6" fill="#f1f5f9" stroke="#64748b" stroke-width="1.2"/>
-  <text x="282" y="533" text-anchor="middle" font-size="10" font-weight="600" fill="#374151">↓ Export CSV</text>
-  <text x="282" y="547" text-anchor="middle" font-size="9" fill="#6b7280">blocs sélectionnés</text>
-
-  <!-- Légende (gauche, en bas) -->
-  <rect x="30" y="578" width="330" height="162" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.2"/>
-  <text x="195" y="598" text-anchor="middle" font-size="11" font-weight="700" fill="#374151">Légende</text>
-
-  <rect x="45" y="610" width="12" height="12" rx="2" fill="#dbeafe" stroke="#2563eb" stroke-width="1"/>
-  <text x="62" y="621" font-size="10" fill="#374151">Entrée / chargement</text>
-  <rect x="45" y="630" width="12" height="12" rx="2" fill="#f0fdf4" stroke="#10b981" stroke-width="1"/>
-  <text x="62" y="641" font-size="10" fill="#374151">Filtre mots-clés (optionnel)</text>
-  <rect x="45" y="650" width="12" height="12" rx="2" fill="#fef9c3" stroke="#ca8a04" stroke-width="1"/>
-  <text x="62" y="661" font-size="10" fill="#374151">Pondération BM25 / TF-IDF</text>
-  <rect x="45" y="670" width="12" height="12" rx="2" fill="#ede9fe" stroke="#7c3aed" stroke-width="1"/>
-  <text x="62" y="681" font-size="10" fill="#374151">Classement global</text>
-  <rect x="45" y="690" width="12" height="12" rx="2" fill="#fce7f3" stroke="#db2777" stroke-width="1"/>
-  <text x="62" y="701" font-size="10" fill="#374151">Alignement fin (passes 1 &amp; 2)</text>
-  <rect x="45" y="710" width="12" height="12" rx="2" fill="#fff7ed" stroke="#ea580c" stroke-width="1"/>
-  <text x="62" y="721" font-size="10" fill="#374151">Diff — SequenceMatcher (passe 3)</text>
-
-  <rect x="210" y="610" width="12" height="12" rx="2" fill="#f1f5f9" stroke="#64748b" stroke-width="1"/>
-  <text x="227" y="621" font-size="10" fill="#374151">Résultats / Export</text>
-  <line x1="210" y1="636" x2="228" y2="636" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
-  <text x="233" y="640" font-size="10" fill="#374151">flux principal</text>
-
-</svg>
-</body></html>"""
-        components.html(pipeline_html, height=1050, scrolling=False)
-        st.markdown("---")
-
-        st.markdown("### Les 4 étapes")
-
-        st.markdown("""
-        <div class="guide-section">
-            <h3>1 — Chargement</h3>
-            <p>Chargez un <b>texte source</b> (à gauche) et un ou plusieurs <b>documents cibles</b> (à droite)
-            au format <code>.txt</code>, <code>.docx</code> ou <code>.pdf</code>. Chaque fichier peut être
-            supprimé via le bouton ✕. Le filtre par mots-clés (🔎) permet de restreindre le corpus avant
-            traitement — les fichiers non retenus restent visibles dans la zone de dépôt.</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("""
-        <div class="guide-section">
-            <h3>2 — Traitement</h3>
-            <p>Cliquez sur <b>Classer les textes cibles par similarité →</b> pour vectoriser et trier les
-            documents par score de similarité globale. La pondération (<b>BM25</b> ou <b>TF-IDF</b>) est
-            utilisée pour calculer le poids des embeddings de chaque phrase avant agrégation en vecteur
-            de document.</p>
-            <p>Sélectionnez ensuite un document cible dans le menu déroulant puis cliquez sur
-            <b>Aligner les textes →</b> pour lancer l'alignement fin.</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("""
-        <div class="guide-section">
-            <h3>3 — Résultats</h3>
-            <p>Comparaison fine entre le texte source et le texte cible. Les résultats sont paginés par
-            blocs de 50. Chaque bloc affiche trois scores :</p>
-            <p>
-                <b>sém.</b> (bleu) — score cosinus entre les embeddings. Mesure la proximité de sens,
-                indépendamment de la forme lexicale.<br>
-                <b>lex.</b> (vert/orange/rouge) — score Jaccard calculé sur les mots en commun hors stopwords.
-                Vert ≥ 40 %, orange 15–39 %, rouge &lt; 15 %.<br>
-                <b>cmb.</b> (violet) — fusion 60 % sémantique + 40 % lexical, après normalisation min-max.
-            </p>
-            <p>Le tri (<b>Combinée / Sémantique / Lexicale</b>) est accessible directement en haut des résultats.
-            Les boutons <b>−</b> / <b>Reset</b> / <b>+</b> ajustent la fenêtre de contexte. Les cases à cocher
-            permettent d'afficher :</p>
-            <p>
-                <span class="guide-badge" style="background:#dc2626">Suppressions</span> présentes dans la source, absentes de la cible.<br>
-                <span class="guide-badge" style="background:#2563eb">Insertions</span> présentes dans la cible, absentes de la source.<br>
-                <span class="guide-badge" style="background:#059669">Mots communs</span> termes partagés (hors stopwords) dans le contexte visible.<br><br>
-                La case <b>Sélectionner</b> permet d'exporter via <b>↓ Export CSV</b>.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("""
-        <div class="guide-section">
-            <h3>4 — Stats et Viz</h3>
-            <p>Onglet dédié, disponible après alignement. Contient les statistiques comparatives
-            (mots, phrases, diversité lexicale, fréquences communes top 10, mots propres top 10)
-            et les visualisations : Heatmap, Radar, Sankey, Timeline, Histogramme des scores,
-            Courbe de densité, Nuage de mots différentiel, Matrice de co-occurrence.</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("---")
-        st.markdown("### Pipeline de traitement")
-
-        st.markdown("""
-        <div class="guide-section">
-            <p>
-                <b>Passe 1 — Embeddings :</b> chaque phrase est encodée par <code>all-MiniLM-L6-v2</code>.
-                Les paires sont comparées par cosinus (ou FAISS si le texte cible dépasse 50 phrases).
-                C'est la passe principale — détecte les rapprochements sémantiques.<br><br>
-                <b>Passe 2 — N-grams (optionnelle) :</b> passe lexicale sur les paires dont le score cosinus
-                tombe dans la zone d'incertitude [0.60–0.85]. Récupère des correspondances que les embeddings
-                auraient sous-scorées.<br><br>
-                <b>Calcul des scores lexicaux :</b> pour chaque paire retenue, deux métriques sont calculées
-                sur les mots hors stopwords —
-                <b>Jaccard</b> (mots communs / union des deux ensembles, sensible à la longueur des segments)
-                et <b>Overlap</b> (mots communs / plus petit segment, corrige ce biais de longueur).
-                Les scores cosinus, Jaccard et Overlap sont normalisés min-max puis fusionnés selon
-                <b>Option B : 60 % sémantique + 20 % Jaccard + 20 % Overlap</b> pour produire le score combiné.<br><br>
-                <b>Passe 3 — SequenceMatcher :</b> calcul des suppressions et insertions caractère par caractère
-                à l'intérieur de chaque paire alignée (affiché à la demande par bloc).
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("---")
-        st.markdown("### Paramètres")
-
-        st.markdown("""
-        <div class="guide-section">
-            <p>Tous les paramètres sont accessibles dans la barre latérale. Les vignettes colorées
-            sous le logo versus CLAUDE affichent leur état en temps réel. Un avertissement apparaît sous
-            chaque paramètre modifié si un alignement existe déjà.</p>
-            <p>
-                <b>Exclure les stopwords</b> — Agit en amont sur les embeddings (classement et alignement).
-                Améliore la précision sur les textes à contenu dense.<br>
-                <b>Méthode de pondération</b> — BM25 ou TF-IDF. Calcule le poids des embeddings de chaque
-                phrase pour le vecteur de document (classement uniquement).<br>
-                <b>Seuil cosinus</b> — Score minimum pour retenir une paire. Paramètre avec le plus d'impact
-                sur le volume de résultats.<br>
-                <b>Seuil adaptatif</b> — Favorise les passages longs par rapport aux courts lors du filtrage.<br>
-                <b>Affinage intermédiaire</b> — Active la passe 2 (n-grams, lexical) sur la zone [0.60–0.85].<br>
-                <b>Agrégation bidirectionnelle</b> — Détecte les correspondances asymétriques
-                (cible → source). Double le temps de calcul.
-            </p>
-            <p>Les <b>stopwords</b> sont chargées depuis <code>stopwords.txt</code>.</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("""
-        <div class="guide-section">
-            <h3>Export CSV</h3>
-            <p>L'export des blocs sélectionnés inclut : numéro, positions source/cible, textes (200 car. max)
-            et nombre de suppressions/insertions par bloc.</p>
-        </div>
-        """, unsafe_allow_html=True)
-
+        render_guide()
 
 # =================================================================
 #  Rendu HTML des alignements
-#  Correspondances (vert) / Suppressions (rouge) / Insertions (bleu)
+#  Rendu HTML des alignements
 # =================================================================
 
-def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, raw_scores=None):
+def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, raw_scores=None, all_matches=None):
     ctx = 50
     
     COLOR_MATCH = "rgba(16,185,129,0.35)"
@@ -2179,7 +2060,7 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
     html += f"""
     <div class="toolbar">
         <div class="toolbar-left">
-            <button class="sel-all-btn" onclick="toggleAll()">☑ Tout sélectionner</button>
+            <button class="sel-all-btn" id="sel-all-btn" onclick="toggleAll()">☑ Tout sélectionner</button>
             <span id="sel-count">0 sélectionné(s)</span>
         </div>
         <div class="toolbar-center">{total_alignments} alignement(s) au total</div>
@@ -2188,8 +2069,8 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
     
     for i, match in enumerate(matches):
         pos1, pos2 = match[0], match[1]
-        n_supp = len(match[2]) if len(match) > 2 and match[2] else 0
-        n_ins = len(match[3]) if len(match) > 3 and match[3] else 0
+        n_supp = len(match[2]) if len(match) > 2 and isinstance(match[2], list) and match[2] else 0
+        n_ins = len(match[3]) if len(match) > 3 and isinstance(match[3], list) and match[3] else 0
 
         counts = []
         if n_supp > 0:
@@ -2243,7 +2124,7 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
                 <div><button class="bt" onclick="c({i},-100)">−</button><button class="bt" onclick="r({i})">Reset</button><button class="bt" onclick="c({i},100)">+</button></div>
             </div>
             <div class="ctrls">
-                <label><input type="checkbox" id="chk_sel_{i}" class="sel-check" onchange="updateSelCount()"><span class="lbl-sel">Sélectionner</span></label>
+                <label><input type="checkbox" id="chk_sel_{i}" class="sel-check" onchange="onCheckChange({i})"><span class="lbl-sel">Sélectionner</span></label>
                 <span style="color:#d1d5db">│</span>
                 <label><input type="checkbox" id="chk_sup_{i}" onchange="u({i})"><span class="lbl-sup">Suppressions</span></label>
                 <label><input type="checkbox" id="chk_ins_{i}" onchange="u({i})"><span class="lbl-ins">Insertions</span></label>
@@ -2262,13 +2143,22 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
     for m_item in matches:
         mjs.append([
             list(m_item[0]), list(m_item[1]),
-            list(m_item[2]) if len(m_item) > 2 and m_item[2] else [],
-            list(m_item[3]) if len(m_item) > 3 and m_item[3] else []
+            list(m_item[2]) if len(m_item) > 2 and isinstance(m_item[2], list) and m_item[2] else [],
+            list(m_item[3]) if len(m_item) > 3 and isinstance(m_item[3], list) and m_item[3] else []
         ])
     
+    # Tableau compact de TOUS les alignements (toutes pages) pour la sélection globale
+    # Format léger : [pos1, pos2, n_supp, n_ins]
+    _all = all_matches if all_matches is not None else matches
+    all_mjs = []
+    for m_item in _all:
+        n_s = len(m_item[2]) if len(m_item) > 2 and isinstance(m_item[2], list) else 0
+        n_i = len(m_item[3]) if len(m_item) > 3 and isinstance(m_item[3], list) else 0
+        all_mjs.append([list(m_item[0]), list(m_item[1]), n_s, n_i])
+
     # Escape stopwords for JS
     sw_escaped = json.dumps(sorted(list(stopwords)))
-    
+
     html += f"""
     <script>
     const t1=`{t1}`,t2=`{t2}`,m={json.dumps(mjs)};
@@ -2276,26 +2166,27 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
     const BG='{COLOR_MATCH}',SUP='{COLOR_SUPPRESS}',INS='{COLOR_INSERT}';
     const stopWords=new Set({sw_escaped});
     let cs=new Array(m.length).fill({ctx});
-    let allSelected=false;
+
+    // ── Sélection globale cross-pages ──────────────────────────────────────
+    const allM={json.dumps(all_mjs)};
+    let selectedGlobal=new Set();
+    let allPagesSelected=false;
+
     function e(t){{let d=document.createElement('div');d.textContent=t;return d.innerHTML}}
-    
-    // --- CORRECTION 3 : MOTS COMMUNS PAR BLOC (LOGIQUE JS AMÉLIORÉE) ---
+
+    // --- MOTS COMMUNS PAR BLOC ---
     function getBlockCW(i){{
         let p1=m[i][0],p2=m[i][1];
         let context = cs[i];
-        
-        // On récupère TOUT le texte visible (Contexte + Match) pour identifier les mots communs
         let srcFull = t1.substring(Math.max(0, p1[0] - context), Math.min(t1.length, p1[1] + context)).toLowerCase();
         let tgtFull = t2.substring(Math.max(0, p2[0] - context), Math.min(t2.length, p2[1] + context)).toLowerCase();
-        
         let w1 = new Set(srcFull.replace(/[.,;:!?'"()\\[\\]«»…–—‘’“”‹›°]/g,' ').split(/\\s+/).filter(w=>w.length>2&&!stopWords.has(w)));
         let w2 = new Set(tgtFull.replace(/[.,;:!?'"()\\[\\]«»…–—‘’“”‹›°]/g,' ').split(/\\s+/).filter(w=>w.length>2&&!stopWords.has(w)));
-        
         let common = new Set();
         w1.forEach(w=>{{if(w2.has(w)) common.add(w)}});
         return common;
     }}
-    
+
     function markCW(txt,cwSet){{
         if(!cwSet || cwSet.size === 0) return txt;
         return txt.replace(/\\S+/g, function(w){{
@@ -2304,15 +2195,13 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
             return w;
         }});
     }}
-    
+
     function hPanel(t,c,p,diffs,showDiff,showCW,diffClass,cwSet){{
         let s=p[0],x=p[1];
         let pr_raw = t.substring(Math.max(0,s-c),s);
         let suf_raw = t.substring(x,Math.min(t.length,x+c));
-        
         let pr = e(pr_raw);
         let suf = e(suf_raw);
-        
         let inner='';
         if(showDiff&&diffs&&diffs.length>0){{
             diffs.sort((a,b)=>a[0]-b[0]);
@@ -2332,16 +2221,13 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
             if(showCW) seg=markCW(seg,cwSet);
             inner='<span style="background:'+BG+';padding:2px 4px;border-radius:3px">'+seg+'</span>';
         }}
-        
-        // Application du marquage des mots communs sur le contexte aussi
         if(showCW){{
             pr = markCW(pr, cwSet);
             suf = markCW(suf, cwSet);
         }}
-        
         return pr+inner+suf;
     }}
-    
+
     function u(i){{
         let ss=document.getElementById('chk_sup_'+i).checked;
         let si=document.getElementById('chk_ins_'+i).checked;
@@ -2350,32 +2236,63 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
         document.getElementById('a'+i).innerHTML=hPanel(t1,cs[i],m[i][0],m[i][2],ss,cw,'sup',cwSet);
         document.getElementById('b'+i).innerHTML=hPanel(t2,cs[i],m[i][1],m[i][3],si,cw,'ins',cwSet);
     }}
-    
+
     function c(i,d){{cs[i]=Math.max({ctx},cs[i]+d);u(i)}}
     function r(i){{cs[i]={ctx};u(i)}}
+
+    // ── Gestion de la sélection ────────────────────────────────────────────
     function updateSelCount(){{
-        let n=0;
-        for(let i=0;i<m.length;i++)if(document.getElementById('chk_sel_'+i).checked)n++;
-        document.getElementById('sel-count').textContent=n+' sélectionné(s)';
+        let total=selectedGlobal.size;
+        let label=total>0&&total===allM.length
+            ? total+' sélectionné(s) — toutes les pages'
+            : total+' sélectionné(s)';
+        document.getElementById('sel-count').textContent=label;
+        let btn=document.getElementById('sel-all-btn');
+        if(btn) btn.textContent=allPagesSelected?'☐ Tout désélectionner':'☑ Tout sélectionner';
     }}
-    function toggleAll(){{
-        allSelected=!allSelected;
-        for(let i=0;i<m.length;i++)document.getElementById('chk_sel_'+i).checked=allSelected;
+
+    function onCheckChange(localIdx){{
+        let globalIdx=startOffset+localIdx;
+        let el=document.getElementById('chk_sel_'+localIdx);
+        if(el&&el.checked){{
+            selectedGlobal.add(globalIdx);
+        }} else {{
+            selectedGlobal.delete(globalIdx);
+            allPagesSelected=false;
+        }}
         updateSelCount();
     }}
+
+    function toggleAll(){{
+        allPagesSelected=!allPagesSelected;
+        if(allPagesSelected){{
+            for(let i=0;i<allM.length;i++) selectedGlobal.add(i);
+            for(let i=0;i<m.length;i++){{
+                let el=document.getElementById('chk_sel_'+i);
+                if(el) el.checked=true;
+            }}
+        }} else {{
+            selectedGlobal.clear();
+            for(let i=0;i<m.length;i++){{
+                let el=document.getElementById('chk_sel_'+i);
+                if(el) el.checked=false;
+            }}
+        }}
+        updateSelCount();
+    }}
+
     function exportCSV(){{
-        let sel=[];
-        for(let i=0;i<m.length;i++)if(document.getElementById('chk_sel_'+i).checked)sel.push(i);
-        if(sel.length===0){{alert('Sélectionnez au moins un bloc à exporter.');return;}}
+        if(selectedGlobal.size===0){{alert('Sélectionnez au moins un bloc à exporter.');return;}}
         let rows=[['num','pos_source','pos_cible','texte_source','texte_cible','nb_suppressions','nb_insertions']];
-        for(let k=0;k<sel.length;k++){{
-            let i=sel[k];
-            let p1=m[i][0],p2=m[i][1];
+        let sortedSel=Array.from(selectedGlobal).sort((a,b)=>a-b);
+        for(let k=0;k<sortedSel.length;k++){{
+            let gi=sortedSel[k];
+            let item=allM[gi];
+            let p1=item[0],p2=item[1];
+            let ns=item[2],ni=item[3];
             let src=t1.substring(p1[0],p1[1]).substring(0,200);
             let tgt=t2.substring(p2[0],p2[1]).substring(0,200);
-            let ns=m[i][2]?m[i][2].length:0;
-            let ni=m[i][3]?m[i][3].length:0;
-            rows.push([(startOffset+i+1),p1[0]+'-'+p1[1],p2[0]+'-'+p2[1],'"'+src.replace(/"/g,'""')+'"','"'+tgt.replace(/"/g,'""')+'"',ns,ni]);
+            rows.push([(gi+1),p1[0]+'-'+p1[1],p2[0]+'-'+p2[1],'"'+src.replace(/"/g,'""')+'"','"'+tgt.replace(/"/g,'""')+'"',ns,ni]);
         }}
         let csv=rows.map(r=>r.join(',')).join('\\n');
         let blob=new Blob([csv],{{type:'text/csv;charset=utf-8;'}});
@@ -2383,7 +2300,13 @@ def make_html(matches, comp, stopwords, start_offset=0, total_alignments=None, r
         let a=document.createElement('a');a.href=url;a.download='alignements_selection.csv';a.click();
         URL.revokeObjectURL(url);
     }}
-    for(let i=0;i<m.length;i++)u(i);
+
+    for(let i=0;i<m.length;i++) u(i);
+    for(let i=0;i<m.length;i++){{
+        let el=document.getElementById('chk_sel_'+i);
+        if(el&&selectedGlobal.has(startOffset+i)) el.checked=true;
+    }}
+    updateSelCount();
     </script></body></html>"""
     
     return html
