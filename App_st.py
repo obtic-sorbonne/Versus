@@ -1259,10 +1259,8 @@ def main():
 
     # Préchauffage du modèle dès l'ouverture — spinner uniquement au premier lancement
     if not st.session_state.get("_model_ready"):
-        with st.spinner("⏳ Initialisation du modèle de langue… (premier lancement uniquement, ~2 min)"):
-            load_model()
+        load_model()
         st.session_state["_model_ready"] = True
-        st.rerun()
 
     # === SIDEBAR INFORMATIONNELLE ===
     import base64 as _b64
