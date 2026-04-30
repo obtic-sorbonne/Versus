@@ -4,6 +4,8 @@ L’interface guide l’utilisateur en quatre étapes — chargement, traitement
 
 Ce développement constitue une réécriture complète de l’outil, indépendante des versions précédentes (voir les autres branches du dépôt).
 
+Version démo en ligne: https://versus-obtic.streamlit.app/
+
 Motasem Alrahabi
 
 Avril, 2026
