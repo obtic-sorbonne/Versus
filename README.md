@@ -5,4 +5,5 @@ L’interface guide l’utilisateur en quatre étapes — chargement, traitement
 Ce développement constitue une réécriture complète de l’outil, indépendante des versions précédentes (voir les autres branches du dépôt).
 
 Motasem Alrahabi
+
 Avril, 2026
